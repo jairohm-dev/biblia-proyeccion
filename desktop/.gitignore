@@ -1,0 +1,4 @@
+# Copia de la app web que genera build.rs y lo que produce la compilación.
+dist/
+src-tauri/target/
+src-tauri/gen/

@@ -1,0 +1,601 @@
+<!-- Consola de Biblia. No se sirve como archivo: el servidor la entrega por /api/app solo tras el PIN. -->
+  <div class="app" id="app" data-pane="library" data-inspector="closed">
+
+    <!-- Biblioteca -->
+    <aside class="library" aria-label="Biblioteca">
+      <div class="lib-head">
+        <button class="brand" id="brandBtn" type="button" title="Iglesia y seguridad">
+          <img class="brand-mark" src="icon.svg" alt="" width="32" height="32">
+          <span class="brand-text">
+            <span class="brand-name" id="brandName">Biblia</span>
+            <span class="brand-sub">by @jairohm.dev</span>
+          </span>
+          <i data-icon="pencil"></i>
+        </button>
+        <div class="segmented" role="tablist" aria-label="Fuente">
+          <button type="button" role="tab" data-tab="bible">Biblia</button>
+          <button type="button" role="tab" data-tab="songs">Canciones</button>
+          <button type="button" role="tab" data-tab="media">Estudio</button>
+          <button type="button" role="tab" data-tab="web">Internet</button>
+        </div>
+        <div class="lib-tools" id="libTools"></div>
+        <label class="searchfield">
+          <i data-icon="search"></i>
+          <input id="search" type="search" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-label="Buscar">
+        </label>
+        <form class="goto" id="gotoForm" autocomplete="off" hidden>
+          <div class="goto-title">Ir a pasaje</div>
+          <div class="combo">
+            <label class="goto-field">
+              <span class="goto-label">Libro</span>
+              <input id="gotoBook" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="bookPopup" placeholder="Escribe o elige un libro" spellcheck="false">
+            </label>
+            <div class="combo-pop" id="bookPopup" role="listbox" aria-label="Libros" hidden></div>
+          </div>
+          <div class="goto-row">
+            <label class="goto-field">
+              <span class="goto-label">Capítulo <small id="gotoChMax"></small></span>
+              <input id="gotoCh" type="number" inputmode="numeric" min="1" placeholder="1">
+            </label>
+            <label class="goto-field">
+              <span class="goto-label">Versículo <small id="gotoVMax"></small></span>
+              <input id="gotoV" type="number" inputmode="numeric" min="1" placeholder="1">
+            </label>
+            <button class="btn-primary goto-go" type="submit">Ir</button>
+          </div>
+          <p class="goto-error" id="gotoError" role="alert" hidden></p>
+          <p class="goto-hint"><kbd>Intro</kbd> abrir · <kbd>⌘ Intro</kbd> abrir y poner en vivo</p>
+        </form>
+      </div>
+      <div class="lib-body" id="libBody"></div>
+    </aside>
+
+    <!-- Monitores y diapositivas -->
+    <main class="main" aria-label="Proyección">
+      <header class="toolbar">
+        <div class="toolbar-status">
+          <span class="status" id="liveStatus" data-state="idle"><i></i><span>Sin proyector</span></span>
+          <span id="outputNote">Abre el proyector para mostrar En vivo en la otra pantalla</span>
+        </div>
+        <div class="audio-bar lg" id="audioBar" role="group" aria-label="Reproductor de audio" hidden>
+          <span class="ab-icon"><i data-icon="music"></i></span>
+          <span class="ab-title" id="abTitle"></span>
+          <button class="mb-btn" id="abPlay" type="button" aria-label="Reproducir"><i data-icon="play"></i></button>
+          <span class="mb-time" id="abTime">0:00</span>
+          <input type="range" class="mb-seek" id="abSeek" min="0" max="1000" value="0" aria-label="Posición del audio">
+          <span class="mb-time" id="abDur">0:00</span>
+          <button class="mb-btn" id="abMute" type="button" aria-label="Silenciar"><i data-icon="sound"></i></button>
+          <input type="range" class="mb-vol" id="abVol" min="0" max="1" step="0.01" value="1" aria-label="Volumen del audio">
+          <button class="mb-btn" id="abClose" type="button" aria-label="Detener y cerrar el audio"><i data-icon="close"></i></button>
+          <audio id="abAudio" preload="auto"></audio>
+        </div>
+        <div class="toolbar-actions">
+          <label class="studio-switch" title="Muestra por separado la vista previa y lo que está en vivo">
+            <span>Previa + En vivo</span>
+            <span class="switch"><input type="checkbox" id="studioSwitch" role="switch"></span>
+          </label>
+          <div class="segmented theme-seg" id="themeSeg" role="group" aria-label="Tema de la app">
+            <button type="button" data-theme-opt="light" aria-label="Tema claro" title="Claro"><i data-icon="sun"></i></button>
+            <button type="button" data-theme-opt="dark" aria-label="Tema oscuro" title="Oscuro"><i data-icon="moon"></i></button>
+            <button type="button" data-theme-opt="auto" aria-label="Tema automático, como el sistema" title="Automático"><i data-icon="halfCircle"></i></button>
+          </div>
+          <button class="btn accent" id="openOutput" type="button" title="Abrir el proyector"><i data-icon="display"></i><span>Abrir proyector</span></button>
+          <button class="btn" id="obsBtn" type="button" title="Mostrar en OBS"><i data-icon="link"></i>OBS</button>
+          <button class="btn" id="toggleInspector" type="button" title="Apariencia" aria-pressed="false" aria-expanded="false" aria-controls="inspector"><i data-icon="palette"></i>Apariencia</button>
+        </div>
+      </header>
+
+      <section class="monitors">
+        <div class="monitor-col">
+          <div class="ambient" id="ambient" aria-hidden="true"></div>
+          <div class="monitor-head">
+            <span class="monitor-label" id="monitorLabel">Vista previa</span>
+            <button class="obs-chip" id="obsChip" type="button" hidden><i data-icon="link"></i>Enlace para OBS</button>
+            <span class="monitor-ref" id="monitorRef"></span>
+          </div>
+          <div class="monitor" id="monitor">
+            <div class="monitor-empty" id="monitorEmpty">Elige un capítulo, un himno o una canción en la biblioteca</div>
+            <div class="media-bar" id="mediaBar" role="group" aria-label="Reproducción del video" hidden>
+              <button class="mb-btn" id="mbPlay" type="button" aria-label="Reproducir"><i data-icon="play"></i></button>
+              <button class="mb-btn" id="mbRestart" type="button" aria-label="Desde el inicio"><i data-icon="restart"></i></button>
+              <span class="mb-time" id="mbTime">0:00</span>
+              <input type="range" class="mb-seek" id="mbSeek" min="0" max="1000" value="0" aria-label="Posición del video">
+              <span class="mb-time" id="mbDur">0:00</span>
+              <button class="mb-btn" id="mbMute" type="button" aria-label="Silenciar"><i data-icon="sound"></i></button>
+              <input type="range" class="mb-vol" id="mbVol" min="0" max="1" step="0.01" value="1" aria-label="Volumen del video">
+            </div>
+          </div>
+          <div class="monitor-controls">
+            <button class="round" id="prevBtn" type="button" aria-label="Anterior"><i data-icon="chevronLeft"></i></button>
+            <button class="live-btn" id="liveBtn" type="button" aria-pressed="false"><i class="dot" aria-hidden="true"></i><span>Poner en vivo</span><kbd>Intro</kbd></button>
+            <button class="round" id="nextBtn" type="button" aria-label="Siguiente"><i data-icon="chevronRight"></i></button>
+          </div>
+        </div>
+        <div class="monitor-col live-col" id="liveCol" hidden>
+          <div class="monitor-head">
+            <span class="monitor-label" id="liveLabel">En vivo</span>
+            <span class="monitor-ref" id="liveRef"></span>
+          </div>
+          <div class="monitor" id="liveMonitor">
+            <div class="monitor-empty" id="liveEmpty">Nada en pantalla. Pulsa → o «Poner en vivo».</div>
+          </div>
+          <div class="monitor-controls single">
+            <button class="toggle" id="clearLive" type="button"><i data-icon="close"></i><span>Quitar de la pantalla</span><kbd>B</kbd></button>
+          </div>
+        </div>
+      </section>
+
+      <div class="split-v" id="splitV" role="separator" aria-orientation="horizontal" aria-label="Tamaño de la vista previa. Arrastra o usa las flechas; doble clic para restablecer" tabindex="0"></div>
+
+      <section class="strip" aria-labelledby="stripTitle">
+        <header class="strip-head">
+          <div class="strip-title">
+            <h2 id="stripTitle">Diapositivas</h2>
+            <p id="stripSub"></p>
+          </div>
+          <div class="strip-actions" id="stripActions"></div>
+        </header>
+        <div class="slides" id="slides"></div>
+      </section>
+    </main>
+
+    <!-- Apariencia -->
+    <aside class="inspector" id="inspector" aria-labelledby="inspTitle">
+      <header class="insp-head">
+        <h2 id="inspTitle">Apariencia</h2>
+        <button class="icon-btn" id="closeInspector" type="button" aria-label="Ocultar apariencia"><i data-icon="close"></i></button>
+      </header>
+      <div class="segmented insp-tabs" role="tablist" aria-label="Sección">
+        <button type="button" role="tab" data-insp-tab="text">Texto</button>
+        <button type="button" role="tab" data-insp-tab="ref">Cita</button>
+        <button type="button" role="tab" data-insp-tab="bg">Fondo</button>
+        <button type="button" role="tab" data-insp-tab="screen">Pantalla</button>
+        <button type="button" role="tab" data-insp-tab="anim">Animación</button>
+      </div>
+
+      <div class="insp-body" id="inspBody">
+        <!-- Texto -->
+        <section class="insp-section" data-insp="text">
+          <div class="ctl">
+            <div class="ctl-label">Tipo de letra</div>
+            <div class="font-grid" id="fontGrid"></div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label"><label for="sizeRange">Tamaño</label><span class="val" data-val="size"></span></div>
+            <div class="stepper">
+              <button type="button" data-look-step="size" data-value="-4" aria-label="Letra más pequeña"><span class="a-sm">A</span></button>
+              <input type="range" id="sizeRange" data-look="size" min="28" max="160" step="2">
+              <button type="button" data-look-step="size" data-value="4" aria-label="Letra más grande"><span class="a-lg">A</span></button>
+            </div>
+            <label class="switch-row" for="fitSwitch">
+              <span>Ajustar al espacio<small>Reduce la letra solo si el texto no cabe</small></span>
+              <span class="switch"><input type="checkbox" id="fitSwitch" data-look="fit" role="switch"></span>
+            </label>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label">Grosor</div>
+            <div class="segmented">
+              <button type="button" data-look-set="weight" data-value="400">Normal</button>
+              <button type="button" data-look-set="weight" data-value="500">Media</button>
+              <button type="button" data-look-set="weight" data-value="700">Negrita</button>
+            </div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label"><label for="leadingRange">Interlineado</label><span class="val" data-val="leading"></span></div>
+            <input type="range" id="leadingRange" data-look="leading" min="1" max="1.8" step="0.05">
+          </div>
+          <div class="ctl">
+            <div class="ctl-label">Alineación</div>
+            <div class="segmented">
+              <button type="button" data-look-set="align" data-value="left" aria-label="Izquierda"><i data-icon="alignLeft"></i></button>
+              <button type="button" data-look-set="align" data-value="center" aria-label="Centro"><i data-icon="alignCenter"></i></button>
+              <button type="button" data-look-set="align" data-value="right" aria-label="Derecha"><i data-icon="alignRight"></i></button>
+            </div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label">Color</div>
+            <div class="swatches" id="colorSwatches"></div>
+          </div>
+          <label class="switch-row" for="upperSwitch">
+            <span>Todo en mayúsculas</span>
+            <span class="switch"><input type="checkbox" id="upperSwitch" data-look="upper" role="switch"></span>
+          </label>
+
+          <div class="divider"></div>
+          <p class="sub-title">Borde de las letras</p>
+          <div class="ctl">
+            <div class="ctl-label"><label for="strokeRange">Grosor del borde</label><span class="val" data-val="stroke"></span></div>
+            <input type="range" id="strokeRange" data-look="stroke" min="0" max="12" step="1">
+          </div>
+          <div class="ctl" data-needs="stroke">
+            <div class="ctl-label">Color del borde</div>
+            <div class="swatches" id="strokeSwatches"></div>
+          </div>
+          <label class="switch-row" for="shadowSwitch">
+            <span>Sombra<small>Mejora la lectura sobre imágenes</small></span>
+            <span class="switch"><input type="checkbox" id="shadowSwitch" data-look="shadow" role="switch"></span>
+          </label>
+        </section>
+
+        <!-- Cita -->
+        <section class="insp-section" data-insp="ref" hidden>
+          <label class="switch-row" for="refShowSwitch">
+            <span>Mostrar la cita<small>Por ejemplo, «Juan 3:16» o el título del himno</small></span>
+            <span class="switch"><input type="checkbox" id="refShowSwitch" data-look="refShow" role="switch"></span>
+          </label>
+          <button class="btn block layout-open" type="button" data-open-layout="ref"><i data-icon="layout"></i>Mover y ajustar la caja de la cita</button>
+          <div class="ctl">
+            <div class="ctl-label">Alineación</div>
+            <div class="segmented">
+              <button type="button" data-look-set="refAlign" data-value="left" aria-label="Izquierda"><i data-icon="alignLeft"></i></button>
+              <button type="button" data-look-set="refAlign" data-value="center" aria-label="Centro"><i data-icon="alignCenter"></i></button>
+              <button type="button" data-look-set="refAlign" data-value="right" aria-label="Derecha"><i data-icon="alignRight"></i></button>
+            </div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label">Tipo de letra</div>
+            <div class="font-grid" id="refFontGrid"></div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label"><label for="refSizeRange">Tamaño</label><span class="val" data-val="refSize"></span></div>
+            <div class="stepper">
+              <button type="button" data-look-step="refSize" data-value="-2" aria-label="Cita más pequeña"><span class="a-sm">A</span></button>
+              <input type="range" id="refSizeRange" data-look="refSize" min="16" max="96" step="2">
+              <button type="button" data-look-step="refSize" data-value="2" aria-label="Cita más grande"><span class="a-lg">A</span></button>
+            </div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label">Grosor</div>
+            <div class="segmented">
+              <button type="button" data-look-set="refWeight" data-value="400">Normal</button>
+              <button type="button" data-look-set="refWeight" data-value="500">Media</button>
+              <button type="button" data-look-set="refWeight" data-value="700">Negrita</button>
+            </div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label">Color</div>
+            <div class="swatches" id="refColorSwatches"></div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label"><label for="refOpacityRange">Opacidad</label><span class="val" data-val="refOpacity"></span></div>
+            <input type="range" id="refOpacityRange" data-look="refOpacity" min="0.3" max="1" step="0.05">
+          </div>
+          <label class="switch-row" for="refUpperSwitch">
+            <span>Mayúsculas</span>
+            <span class="switch"><input type="checkbox" id="refUpperSwitch" data-look="refUpper" role="switch"></span>
+          </label>
+          <label class="switch-row" for="refItalicSwitch">
+            <span>Cursiva</span>
+            <span class="switch"><input type="checkbox" id="refItalicSwitch" data-look="refItalic" role="switch"></span>
+          </label>
+          <label class="switch-row" for="refVersionSwitch">
+            <span>Añadir la versión<small>Juan 3:16 · RVR1960</small></span>
+            <span class="switch"><input type="checkbox" id="refVersionSwitch" data-look="refVersion" role="switch"></span>
+          </label>
+        </section>
+
+        <!-- Fondo -->
+        <section class="insp-section" data-insp="bg" hidden>
+          <div class="ctl">
+            <div class="ctl-label">Color de fondo</div>
+            <div class="swatches" id="bgSwatches"></div>
+          </div>
+          <div class="ctl">
+            <div class="ctl-label">Imagen de fondo</div>
+            <div class="img-row">
+              <label class="btn" for="bgFile"><i data-icon="image"></i>Elegir imagen</label>
+              <input type="file" id="bgFile" accept="image/*" hidden>
+              <button class="btn" id="clearImage" type="button">Quitar</button>
+            </div>
+          </div>
+          <div class="ctl" data-needs="bgImage">
+            <div class="ctl-label">Ajuste</div>
+            <div class="segmented">
+              <button type="button" data-look-set="bgFit" data-value="cover">Llenar</button>
+              <button type="button" data-look-set="bgFit" data-value="contain">Completa</button>
+              <button type="button" data-look-set="bgFit" data-value="blur">Con relleno</button>
+            </div>
+            <p class="hint fit-hint">«Llenar» cubre toda la pantalla y recorta lo que no cabe. «Completa» la muestra entera. «Con relleno» la muestra entera y rellena los lados con la misma imagen difuminada.</p>
+          </div>
+          <div class="ctl" data-needs="bgImage">
+            <div class="ctl-label"><label for="bgZoomRange">Zoom</label><span class="val" data-val="bgZoom"></span></div>
+            <div class="stepper">
+              <button type="button" data-look-step="bgZoom" data-value="-10" aria-label="Alejar">−</button>
+              <input type="range" id="bgZoomRange" data-look="bgZoom" min="0" max="300" step="5">
+              <button type="button" data-look-step="bgZoom" data-value="10" aria-label="Acercar">+</button>
+            </div>
+          </div>
+          <div class="ctl" data-needs="bgImage">
+            <div class="ctl-label"><label for="bgXRange">Mover horizontal (X)</label><span class="val" data-val="bgX"></span></div>
+            <input type="range" id="bgXRange" data-look="bgX" min="-50" max="50" step="1">
+          </div>
+          <div class="ctl" data-needs="bgImage">
+            <div class="ctl-label"><label for="bgYRange">Mover vertical (Y)</label><span class="val" data-val="bgY"></span></div>
+            <input type="range" id="bgYRange" data-look="bgY" min="-50" max="50" step="1">
+          </div>
+          <div class="img-hint" data-needs="bgImage">
+            <span>Arrastra la imagen sobre la pantalla para moverla; usa la rueda o el gesto de pellizcar para el zoom.</span>
+            <button class="btn" type="button" data-look-reset="bgPosition">Centrar</button>
+          </div>
+          <div class="ctl" data-needs="bgImage">
+            <div class="ctl-label"><label for="bgBlurRange">Desenfoque</label><span class="val" data-val="bgBlur"></span></div>
+            <input type="range" id="bgBlurRange" data-look="bgBlur" min="0" max="20" step="1">
+          </div>
+          <p class="sub-title" data-needs="bgImage">Velo sobre la imagen</p>
+          <div class="ctl" data-needs="bgImage">
+            <div class="ctl-label">Color del velo</div>
+            <div class="swatches" id="dimSwatches"></div>
+          </div>
+          <div class="ctl" data-needs="bgImage">
+            <div class="ctl-label"><label for="dimRange">Opacidad del velo</label><span class="val" data-val="dim"></span></div>
+            <input type="range" id="dimRange" data-look="dim" min="0" max="0.95" step="0.05">
+          </div>
+          <div class="divider"></div>
+          <p class="sub-title">Marco de la pantalla</p>
+          <div class="ctl">
+            <div class="ctl-label"><label for="frameRange">Grosor del marco</label><span class="val" data-val="frame"></span></div>
+            <input type="range" id="frameRange" data-look="frame" min="0" max="24" step="1">
+          </div>
+          <div class="ctl" data-needs="frame">
+            <div class="ctl-label">Color del marco</div>
+            <div class="swatches" id="frameSwatches"></div>
+          </div>
+        </section>
+
+        <!-- Animación -->
+        <section class="insp-section" data-insp="anim" hidden>
+          <div class="anim-demo" id="animDemo" role="button" tabindex="0" aria-label="Ejemplo de la diapositiva A a la B. Pulsa para repetirlo" title="Pulsa para repetir">
+            <span class="anim-demo-tag" id="animDemoTag" aria-hidden="true">A</span>
+            <span class="anim-demo-replay" aria-hidden="true"><i data-icon="restart"></i></span>
+          </div>
+
+          <div class="anim-group">
+            <p class="anim-title">Transición <span>de una diapositiva a la siguiente</span></p>
+            <div class="anim-grid" id="transitionGrid"></div>
+            <div class="ctl" data-anim-for="tr-dir">
+              <div class="ctl-label">Dirección</div>
+              <div class="segmented"><button type="button" data-look-set="trDir" data-value="left" aria-label="Hacia la izquierda" title="Hacia la izquierda"><i data-icon="arrowLeft"></i></button><button type="button" data-look-set="trDir" data-value="right" aria-label="Hacia la derecha" title="Hacia la derecha"><i data-icon="arrowRight"></i></button><button type="button" data-look-set="trDir" data-value="up" aria-label="Hacia arriba" title="Hacia arriba"><i data-icon="arrowUp"></i></button><button type="button" data-look-set="trDir" data-value="down" aria-label="Hacia abajo" title="Hacia abajo"><i data-icon="arrowDown"></i></button></div>
+            </div>
+            <div class="ctl" data-anim-for="tr-int"><div class="ctl-label">Intensidad</div><div class="segmented"><button type="button" data-look-set="trIntensity" data-value="subtle">Sutil</button><button type="button" data-look-set="trIntensity" data-value="medium">Media</button><button type="button" data-look-set="trIntensity" data-value="strong">Fuerte</button></div></div>
+            <div class="ctl" data-anim-for="tr-ease"><div class="ctl-label">Movimiento</div><div class="segmented"><button type="button" data-look-set="trEase" data-value="smooth">Suave</button><button type="button" data-look-set="trEase" data-value="linear">Constante</button><button type="button" data-look-set="trEase" data-value="spring">Con rebote</button></div></div>
+            <div class="ctl" data-anim-for="tr-dur">
+              <div class="ctl-label"><label for="trSpeedRange">Duración</label><span class="val" data-val="trSpeed"></span></div>
+              <input type="range" id="trSpeedRange" data-look="trSpeed" min="0.2" max="2" step="0.05">
+            </div>
+          </div>
+
+          <div class="anim-group">
+            <p class="anim-title">Texto <span>cómo aparece al llegar</span></p>
+            <div class="anim-grid" id="textAnimGrid"></div>
+            <div class="ctl" data-anim-for="tx-dir">
+              <div class="ctl-label">Entra desde</div>
+              <div class="segmented"><button type="button" data-look-set="txDir" data-value="up" aria-label="Desde abajo" title="Desde abajo"><i data-icon="arrowUp"></i></button><button type="button" data-look-set="txDir" data-value="down" aria-label="Desde arriba" title="Desde arriba"><i data-icon="arrowDown"></i></button><button type="button" data-look-set="txDir" data-value="left" aria-label="Desde la derecha" title="Desde la derecha"><i data-icon="arrowLeft"></i></button><button type="button" data-look-set="txDir" data-value="right" aria-label="Desde la izquierda" title="Desde la izquierda"><i data-icon="arrowRight"></i></button></div>
+            </div>
+            <div class="ctl" data-anim-for="tx-int"><div class="ctl-label">Intensidad</div><div class="segmented"><button type="button" data-look-set="txIntensity" data-value="subtle">Sutil</button><button type="button" data-look-set="txIntensity" data-value="medium">Media</button><button type="button" data-look-set="txIntensity" data-value="strong">Fuerte</button></div></div>
+            <div class="ctl" data-anim-for="tx-ease"><div class="ctl-label">Movimiento</div><div class="segmented"><button type="button" data-look-set="txEase" data-value="smooth">Suave</button><button type="button" data-look-set="txEase" data-value="linear">Constante</button><button type="button" data-look-set="txEase" data-value="spring">Con rebote</button></div></div>
+            <div class="ctl" data-anim-for="tx-dur">
+              <div class="ctl-label"><label for="txSpeedRange" id="txSpeedLabel">Duración</label><span class="val" data-val="txSpeed"></span></div>
+              <input type="range" id="txSpeedRange" data-look="txSpeed" min="0.2" max="3" step="0.05">
+            </div>
+            <div class="ctl" data-anim-for="tx-delay">
+              <div class="ctl-label"><label for="txDelayRange">Retraso</label><span class="val" data-val="txDelay"></span></div>
+              <input type="range" id="txDelayRange" data-look="txDelay" min="0" max="2" step="0.05">
+            </div>
+          </div>
+
+          <button class="btn block" id="replayAnim" type="button"><i data-icon="play"></i>Probar en la vista previa</button>
+          <p class="hint">Se aplica en la consola, el proyector y OBS. Las presentaciones pueden tener su propia transición: ábrelas en el editor.</p>
+        </section>
+
+        <!-- Pantalla -->
+        <section class="insp-section" data-insp="screen" hidden>
+          <div class="ctl">
+            <div class="ctl-label">Formato
+              <button class="help-btn" id="ratioHelp" type="button" aria-expanded="false" aria-controls="ratioInfo" aria-label="Ver las resoluciones de este formato" title="Resoluciones en píxeles"><i data-icon="help"></i></button>
+            </div>
+            <div class="segmented">
+              <button type="button" data-look-set="ratio" data-value="16/9">16:9</button>
+              <button type="button" data-look-set="ratio" data-value="16/10">16:10</button>
+              <button type="button" data-look-set="ratio" data-value="4/3">4:3</button>
+            </div>
+            <div class="res-info" id="ratioInfo" hidden>
+              <p class="res-note" id="ratioNote"></p>
+              <ul class="res-list" id="ratioList"></ul>
+            </div>
+          </div>
+          <button class="btn block layout-open" type="button" data-open-layout="text"><i data-icon="layout"></i>Diseño: mover las cajas del texto y la cita</button>
+          <div class="ctl">
+            <div class="ctl-label">Texto dentro de su caja</div>
+            <div class="segmented">
+              <button type="button" data-look-set="valign" data-value="flex-start">Arriba</button>
+              <button type="button" data-look-set="valign" data-value="center">Centro</button>
+              <button type="button" data-look-set="valign" data-value="flex-end">Abajo</button>
+            </div>
+          </div>
+        </section>
+      </div>
+      <footer class="insp-foot"><button class="btn block" id="resetLook" type="button">Restablecer la apariencia</button></footer>
+    </aside>
+
+    <nav class="tabbar" aria-label="Secciones">
+      <button class="tab" type="button" data-pane="library"><i data-icon="book"></i><span>Biblioteca</span></button>
+      <button class="tab" type="button" data-pane="live"><i data-icon="live"></i><span>Proyección</span></button>
+      <button class="tab" type="button" data-pane="style"><i data-icon="palette"></i><span>Apariencia</span></button>
+    </nav>
+
+    <dialog class="welcome" id="welcome" aria-labelledby="welcomeFormTitle">
+      <form class="wl-step" method="dialog" id="welcomeForm">
+        <img class="wl-icon sm" src="icon.svg" alt="" width="64" height="64">
+        <h1 id="welcomeFormTitle">Tu iglesia</h1>
+        <p class="wl-lead">El nombre aparece arriba en la biblioteca y en la pantalla de entrada.</p>
+        <div class="wl-fields">
+          <label class="wl-field"><span>Nombre</span><input id="churchName" required maxlength="40" autocomplete="organization" placeholder="Iglesia Bautista Central"></label>
+        </div>
+        <div class="wl-preview" aria-hidden="true">
+          <span class="wl-preview-label">Así se verá</span>
+          <span class="brand">
+            <img class="brand-mark" src="icon.svg" alt="" width="32" height="32">
+            <span class="brand-text">
+              <span class="brand-name" id="wlPrevName">Biblia</span>
+              <span class="brand-sub">by @jairohm.dev</span>
+            </span>
+          </span>
+        </div>
+        <div class="wl-actions">
+          <button class="link-btn" type="button" data-wl="back" id="wlBack">Cancelar</button>
+          <button class="btn-primary wl-main" type="submit" id="wlSubmit">Guardar</button>
+        </div>
+        <div class="wl-security" id="wlSecurity">
+          <button class="link-inline" type="button" data-wl="change-pin"><i data-icon="lock"></i>Cambiar el PIN</button>
+          <button class="link-inline" type="button" data-wl="lock-now">Bloquear la consola</button>
+        </div>
+        <p class="wl-credit">Creado por <a href="https://jairohm.dev" target="_blank" rel="noopener noreferrer">Jairohm.dev</a></p>
+      </form>
+    </dialog>
+
+    <dialog class="sheet" id="songEditor" aria-labelledby="editorTitle">
+      <form method="dialog" id="songForm">
+        <header class="sheet-head">
+          <button class="link-btn" type="submit" value="cancel" formnovalidate>Cancelar</button>
+          <h2 id="editorTitle">Nueva canción</h2>
+          <button class="link-btn strong" type="submit" value="save">Guardar</button>
+        </header>
+        <label class="field">Título<input id="songTitle" required maxlength="140" autocomplete="off"></label>
+        <div class="field-row">
+          <label class="field"><span>Autor <em>opcional</em></span><input id="songAuthor" maxlength="140" autocomplete="off"></label>
+          <label class="field" id="songFolderField">Carpeta
+            <span class="select-wrap"><select id="songFolder"></select><i data-icon="chevronRight"></i></span>
+          </label>
+        </div>
+        <div class="field">
+          <div class="field-head">
+            <label for="songLyrics" id="lyricsLabel">Letra</label>
+            <label class="btn" for="lyricsFile"><i data-icon="upload"></i>Abrir archivo de texto</label>
+            <input type="file" id="lyricsFile" accept=".txt,.lrc,text/plain" hidden>
+          </div>
+          <textarea id="songLyrics" required placeholder="Pega o escribe la letra, o arrastra aquí un archivo .txt&#10;&#10;Primera estrofa&#10;segunda línea&#10;&#10;Coro&#10;Líneas del coro"></textarea>
+        </div>
+        <button class="link-inline restore-original" type="button" id="restoreOriginal" hidden><i data-icon="restart"></i>Restaurar la letra original del himnario</button>
+        <p class="hint hint-song">Deja una línea en blanco entre estrofas: cada estrofa será una diapositiva. Escribe «Coro» en la primera línea de una estrofa para marcarla como coro.</p>
+        <p class="hint hint-text">Deja una línea en blanco para pasar a otra diapositiva. Sirve para anuncios, la bienvenida o el versículo del día.</p>
+      </form>
+    </dialog>
+
+    <dialog class="studio layout-editor" id="layoutDialog" aria-labelledby="layoutTitle">
+      <header class="studio-bar">
+        <span class="studio-badge layout-badge"><i data-icon="layout"></i></span>
+        <h2 class="layout-title" id="layoutTitle">Diseño de la pantalla</h2>
+        <span class="studio-counter">Arrastra las cajas para moverlas; las esquinas cambian su tamaño</span>
+        <div class="studio-tools">
+          <button class="btn" type="button" data-layout="reset"><i data-icon="restart"></i>Restablecer</button>
+          <button class="btn accent" type="button" data-layout="close">Listo</button>
+        </div>
+      </header>
+      <div class="layout-body">
+        <div class="studio-canvas-wrap">
+          <div class="studio-canvas" id="layoutCanvas"><div class="studio-overlay" id="layoutOverlay"></div></div>
+          <p class="studio-hint">Las líneas rojas marcan el centro. Los cambios se ven al momento en el proyector y en OBS.</p>
+        </div>
+        <aside class="studio-inspector" id="layoutInspector" aria-label="Caja seleccionada"></aside>
+      </div>
+    </dialog>
+
+    <dialog class="sheet" id="verseDialog" aria-labelledby="verseTitle">
+      <form method="dialog">
+        <header class="sheet-head">
+          <button class="link-btn" type="submit" value="cancel" formnovalidate>Cancelar</button>
+          <h2 id="verseTitle">Editar versículo</h2>
+          <button class="link-btn strong" type="submit" value="save">Guardar</button>
+        </header>
+        <p class="verse-ref" id="verseRef"></p>
+        <label class="field">Texto que se proyecta<textarea id="verseText" class="verse-text" rows="7"></textarea></label>
+        <p class="hint">Se guarda solo en este equipo y solo para esta versión de la Biblia. El texto original no se pierde: puedes volver a él cuando quieras.</p>
+        <button class="link-inline restore-original" type="button" id="verseRestore" hidden><i data-icon="restart"></i>Restaurar el texto original</button>
+      </form>
+    </dialog>
+
+    <dialog class="sheet small" id="askDialog" aria-labelledby="askTitle">
+      <form method="dialog">
+        <header class="sheet-head">
+          <button class="link-btn" type="submit" value="cancel" formnovalidate>Cancelar</button>
+          <h2 id="askTitle"></h2>
+          <button class="link-btn strong" type="submit" value="ok" id="askOk">Crear</button>
+        </header>
+        <label class="field"><span id="askLabel"></span><input id="askInput" required maxlength="60" autocomplete="off"></label>
+      </form>
+    </dialog>
+
+    <dialog class="sheet small" id="screenDialog" aria-labelledby="screenTitle">
+      <form method="dialog">
+        <header class="sheet-head">
+          <button class="link-btn" type="submit" value="cancel">Cancelar</button>
+          <h2 id="screenTitle">¿En qué pantalla?</h2>
+          <span></span>
+        </header>
+        <p class="hint">Elige la pantalla del proyector. Se abrirá a pantalla completa; Esc la cierra.</p>
+        <div class="screen-list" id="screenList"></div>
+        <button class="btn block danger" type="button" id="closeProjector" hidden>Cerrar el proyector</button>
+      </form>
+    </dialog>
+
+    <dialog class="sheet" id="obsDialog" aria-labelledby="obsTitle">
+      <form method="dialog">
+        <header class="sheet-head">
+          <span></span>
+          <h2 id="obsTitle">Mostrar en OBS</h2>
+          <button class="link-btn strong" type="submit" value="close">Listo</button>
+        </header>
+        <div class="obs-desktop" id="obsDesktop" hidden>
+          <label class="switch-row"><span>Transmitir a OBS<small>Enciende un servidor solo para que OBS pueda ver lo que está en vivo. Al apagarlo no queda nada abierto.</small></span>
+            <span class="switch"><input type="checkbox" id="obsSwitch" role="switch"></span></label>
+          <label class="switch-row compact"><span>Permitir OBS en otro equipo de la red<small>Solo para ver, con la llave del enlace.</small></span>
+            <span class="switch"><input type="checkbox" id="obsLan" role="switch"></span></label>
+        </div>
+        <ol class="obs-steps">
+          <li>En OBS, en <strong>Fuentes</strong>, pulsa <strong>+</strong> y elige <strong>Navegador</strong>.</li>
+          <li>Pega uno de estos enlaces en <strong>URL</strong> y pon ancho <strong id="obsWidth">1920</strong> y alto <strong id="obsHeight">1080</strong> <span class="obs-format">(formato <span id="obsRatio">16:9</span>, el de Apariencia → Pantalla)</span>.</li>
+          <li>Lo que pongas <strong>En vivo</strong> aparecerá en OBS al momento.</li>
+        </ol>
+        <div class="obs-link">
+          <div class="obs-name">Pantalla completa</div>
+          <div class="obs-sub">El texto con el fondo y el diseño de Apariencia.</div>
+          <div class="copy-row"><input id="obsFull" readonly aria-label="Enlace de pantalla completa"><button class="btn accent" type="button" data-copy="obsFull">Copiar</button></div>
+        </div>
+        <div class="obs-link">
+          <div class="obs-name">Solo texto, fondo transparente</div>
+          <div class="obs-sub">Para ponerlo encima de la cámara o de un video.</div>
+          <div class="copy-row"><input id="obsOverlay" readonly aria-label="Enlace con fondo transparente"><button class="btn accent" type="button" data-copy="obsOverlay">Copiar</button></div>
+        </div>
+        <p class="obs-warn" id="obsWarn" hidden>Este servidor no permite conectar OBS. Cierra el servidor actual y abre la app con <code>./serve.sh</code>.</p>
+      </form>
+    </dialog>
+
+    <dialog class="studio" id="studio" aria-labelledby="studioName">
+      <header class="studio-bar">
+        <span class="studio-badge"><i data-icon="sparkles"></i></span>
+        <input id="studioName" class="studio-name" maxlength="80" autocomplete="off" aria-label="Nombre de la presentación">
+        <span class="studio-counter" id="studioCounter"></span>
+        <div class="studio-tools">
+          <button class="btn" type="button" data-studio="add-text"><i data-icon="text"></i>Texto</button>
+          <button class="btn" type="button" data-studio="add-image"><i data-icon="image"></i>Imagen</button>
+          <input type="file" id="studioFile" accept="image/*" multiple hidden>
+        </div>
+        <button class="btn accent" type="button" data-studio="close">Listo</button>
+      </header>
+      <div class="studio-body">
+        <aside class="studio-slides" id="studioSlides" aria-label="Diapositivas"></aside>
+        <main class="studio-canvas-wrap" id="studioCanvasWrap">
+          <div class="studio-canvas" id="studioCanvas">
+            <div class="studio-overlay" id="studioOverlay"></div>
+          </div>
+          <p class="studio-hint">Arrastra para mover · esquinas para agrandar · doble clic en un texto para escribir · suelta aquí imágenes de tu computadora</p>
+        </main>
+        <aside class="studio-inspector" id="studioInspector" aria-label="Propiedades"></aside>
+      </div>
+    </dialog>
+
+    <input type="file" id="mediaImageFile" accept="image/*" multiple hidden>
+    <input type="file" id="mediaVideoFile" accept="video/*" multiple hidden>
+    <input type="file" id="mediaAudioFile" accept="audio/*" multiple hidden>
+
+  </div>

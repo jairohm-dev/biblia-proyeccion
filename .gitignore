@@ -1,0 +1,18 @@
+# Herramientas locales (no forman parte del proyecto)
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+
+# App de escritorio: copia que genera build.rs y lo que produce la compilación
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+
+# Datos de cada iglesia (PIN, llaves): nunca van al repositorio
+conf*/
+*.pem
+*.key
+.env

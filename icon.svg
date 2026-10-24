@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d9cff"/>
+      <stop offset="1" stop-color="#0062e0"/>
+    </linearGradient>
+    <linearGradient id="cross" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f8bff"/>
+      <stop offset="1" stop-color="#0058cc"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <rect x="41" y="29" width="51" height="73" rx="6" fill="#cfe2ff"/>
+  <rect x="36" y="24" width="52" height="73" rx="6" fill="#ffffff"/>
+  <path d="M45 24v73" stroke="#d6e6ff" stroke-width="2"/>
+  <rect x="62" y="38" width="8" height="44" rx="2" fill="url(#cross)"/>
+  <rect x="53" y="49" width="26" height="8" rx="2" fill="url(#cross)"/>
+</svg>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f2f2f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e0e10" media="(prefers-color-scheme: dark)">
+  <title>Biblia</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <script>if (new URLSearchParams(location.search).has('salida') || window.__BIBLIA_SALIDA__) document.documentElement.classList.add('is-output');
+    try { const t = JSON.parse(localStorage.getItem('biblia.theme')); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Fraunces:ital,opsz,wght@0,9..144,300..800;1,9..144,300..800&family=Lora:ital,wght@0,400..700;1,400..700&family=Nunito:ital,wght@0,300..900;1,300..900&family=Oswald:wght@300..700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Portada: registro o entrada con PIN. La consola no viene aquí; llega del servidor tras el PIN. -->
+  <!-- Pantalla de arranque: solo el ícono mientras se comprueba la sesión; después se ve la consola o la
+       entrada, nunca las dos. Está visible desde el primer instante, sin esperar al JavaScript. -->
+  <div class="splash" id="splash" aria-hidden="true">
+    <img src="icon.svg" alt="" width="96" height="96">
+    <span class="spinner"></span>
+  </div>
+
+  <dialog class="gate" id="gate" aria-labelledby="gateTitle">
+    <div class="gate-card">
+      <section class="gate-brand">
+        <p class="gate-hello" id="gateHello">Te damos la bienvenida a</p>
+        <span class="gate-logo"><img src="icon.svg" alt="" width="64" height="64"></span>
+        <h1 class="gate-name" id="gateName">Biblia</h1>
+        <p class="gate-about">Proyecta la Palabra, los himnos y las canciones en la pantalla de tu iglesia, en el proyector y en OBS.</p>
+        <div class="gate-foot">
+          <p class="gate-credit">Creado por <a href="https://jairohm.dev" target="_blank" rel="noopener noreferrer">Jairohm.dev</a></p>
+          <nav class="gate-links" aria-label="Enlaces del autor">
+            <a class="gate-link" href="https://github.com/jairohm-dev/biblia-proyeccion" target="_blank" rel="noopener noreferrer" aria-label="Código en GitHub" title="Código en GitHub">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .8a11.2 11.2 0 0 0-3.54 21.83c.56.1.77-.24.77-.54v-1.9c-3.12.68-3.78-1.5-3.78-1.5-.51-1.3-1.25-1.64-1.25-1.64-1.02-.7.08-.68.08-.68 1.13.08 1.72 1.16 1.72 1.16 1 1.72 2.63 1.22 3.27.93.1-.73.39-1.22.71-1.5-2.49-.28-5.11-1.25-5.11-5.55 0-1.23.44-2.23 1.16-3.02-.12-.28-.5-1.42.11-2.97 0 0 .94-.3 3.08 1.15a10.7 10.7 0 0 1 5.6 0c2.14-1.45 3.08-1.15 3.08-1.15.61 1.55.23 2.69.11 2.97.72.79 1.16 1.79 1.16 3.02 0 4.31-2.63 5.26-5.13 5.54.4.35.76 1.03.76 2.08v3.08c0 .3.2.65.78.54A11.2 11.2 0 0 0 12 .8z"/></svg>
+            </a>
+            <a class="gate-link" href="https://jairohm.dev" target="_blank" rel="noopener noreferrer" aria-label="Web de Jairohm" title="jairohm.dev"><i data-icon="globe"></i></a>
+          </nav>
+        </div>
+        <svg class="gate-wave" viewBox="0 0 120 600" preserveAspectRatio="none" aria-hidden="true">
+          <path class="w1" d="M44 0 C 4 70, 6 130, 40 180 C 72 228, 74 282, 40 330 C 8 378, 4 436, 36 486 C 62 528, 64 568, 44 600 L 120 600 L 120 0 Z"/>
+          <path class="w2" d="M60 0 C 20 60, 20 120, 54 170 C 86 218, 90 270, 56 320 C 22 372, 18 430, 50 480 C 78 524, 80 566, 60 600 L 120 600 L 120 0 Z"/>
+        </svg>
+      </section>
+
+      <form class="gate-form" id="gateForm" autocomplete="off" novalidate>
+        <h2 id="gateTitle">Registra tu iglesia</h2>
+        <p class="gate-lead" id="gateLead"></p>
+        <p class="gate-live" id="gateLive" hidden><span class="gate-live-dot" aria-hidden="true"></span><span>Sigue en vivo: <strong id="gateLiveRef"></strong></span></p>
+        <div class="gate-fields" id="gateFields">
+          <label class="gate-field" id="gateChurchRow"><span>Nombre de la iglesia</span>
+            <span class="gate-input"><input id="gateChurch" maxlength="40" autocomplete="organization" placeholder="Iglesia Bautista Central"><i data-icon="check"></i></span></label>
+          <label class="gate-field" id="gateCurrentRow"><span>PIN actual</span>
+            <span class="gate-input"><input id="gateCurrent" type="password" inputmode="numeric" autocomplete="current-password" maxlength="8" placeholder="Tu PIN de ahora"><i data-icon="check"></i></span></label>
+          <label class="gate-field" id="gatePinRow"><span id="gatePinLabel">PIN</span>
+            <span class="gate-input"><input id="gatePin" type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="De 6 a 8 números"><i data-icon="check"></i><button class="gate-eye" type="button" id="gateEye" aria-label="Mostrar el PIN" aria-pressed="false" title="Mostrar el PIN"><i data-icon="eye"></i></button></span></label>
+          <label class="gate-field" id="gateConfirmRow"><span>Repetir el PIN</span>
+            <span class="gate-input"><input id="gateConfirm" type="password" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="El mismo PIN"><i data-icon="check"></i></span></label>
+        </div>
+        <p class="gate-msg" id="gateMsg" role="alert" hidden></p>
+        <p class="gate-note" id="gateNote" hidden></p>
+        <div class="gate-actions" id="gateActions">
+          <button class="gate-btn primary" type="submit" id="gateSubmit">Registrar</button>
+          <button class="gate-btn ghost" type="button" id="gateCancel" hidden>Cancelar</button>
+        </div>
+        <button class="link-inline gate-forgot" type="button" id="gateForgot" hidden>¿Olvidaste el PIN?</button>
+        <div class="gate-wait" id="gateWait" hidden><span class="spinner"></span></div>
+      </form>
+    </div>
+  </dialog>
+
+  <div class="app-root" id="appRoot"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="auth.js"></script>
+  <script src="studio.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

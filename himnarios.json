@@ -1,0 +1,59 @@
+[
+  {
+    "id": "clasicos",
+    "nombre": "Himnos clásicos",
+    "descripcion": "Himnos de dominio público",
+    "himnos": [
+      {
+        "numero": 1,
+        "titulo": "Santo, Santo, Santo",
+        "autor": "Reginald Heber",
+        "estrofas": [
+          { "tipo": "estrofa", "texto": "¡Santo! ¡Santo! ¡Santo! Señor omnipotente,\nsiempre el labio mío loores te dará;\n¡Santo! ¡Santo! ¡Santo! te adoro reverente,\nDios en tres personas, bendita Trinidad." },
+          { "tipo": "estrofa", "texto": "¡Santo! ¡Santo! ¡Santo! en numeroso coro,\nsantos escogidos te adoran sin cesar,\nde alegría llenos, y sus coronas de oro\nrinden ante el trono y el cristalino mar." },
+          { "tipo": "estrofa", "texto": "¡Santo! ¡Santo! ¡Santo! la inmensa muchedumbre\nde ángeles que cumplen tu santa voluntad\nante ti se postra bañada de tu lumbre,\nante ti que has sido, que eres y serás." },
+          { "tipo": "estrofa", "texto": "¡Santo! ¡Santo! ¡Santo! por más que estés velado\ne imposible sea tu gloria contemplar,\nsanto tú eres solo, y nada hay a tu lado\nen poder perfecto, pureza y caridad." },
+          { "tipo": "estrofa", "texto": "¡Santo! ¡Santo! ¡Santo! la gloria de tu nombre\nvemos en tus obras en cielo, tierra y mar;\n¡Santo! ¡Santo! ¡Santo! te adorará todo hombre,\nDios en tres personas, bendita Trinidad." }
+        ]
+      },
+      {
+        "numero": 2,
+        "titulo": "Castillo fuerte es nuestro Dios",
+        "autor": "Martín Lutero",
+        "estrofas": [
+          { "tipo": "estrofa", "texto": "Castillo fuerte es nuestro Dios,\ndefensa y buen escudo;\ncon su poder nos librará\nen este trance agudo.\nCon furia y con afán\nacósanos Satán;\npor armas deja ver\nastucia y gran poder;\ncual él no hay en la tierra." },
+          { "tipo": "estrofa", "texto": "Nuestro valor es nada aquí,\ncon él todo es perdido;\nmas con nosotros luchará\nde Dios el escogido.\nEs nuestro Rey Jesús,\nel que venció en la cruz,\nSeñor y Salvador,\ny siendo el solo Dios,\nél triunfa en la batalla." }
+        ]
+      },
+      {
+        "numero": 3,
+        "titulo": "Oh, qué amigo nos es Cristo",
+        "autor": "Joseph M. Scriven",
+        "estrofas": [
+          { "tipo": "estrofa", "texto": "¡Oh, qué amigo nos es Cristo!\nÉl llevó nuestro dolor,\ny nos manda que llevemos\ntodo a Dios en oración.\n¿Vive el hombre desprovisto\nde paz, gozo y santo amor?\nEsto es porque no llevamos\ntodo a Dios en oración." },
+          { "tipo": "estrofa", "texto": "¿Vives débil y cargado\nde cuidados y temor?\nA Jesús, refugio eterno,\ndile todo en oración.\n¿Te desprecian tus amigos?\nCuéntaselo en oración;\nen sus brazos de amor tierno\npaz tendrá tu corazón." }
+        ]
+      },
+      {
+        "numero": 4,
+        "titulo": "Roca de la eternidad",
+        "autor": "Augustus M. Toplady",
+        "estrofas": [
+          { "tipo": "estrofa", "texto": "Roca de la eternidad,\nfuiste abierta tú por mí;\nsé mi escondedero fiel,\nsolo encuentro paz en ti,\nrico, limpio manantial\nen el cual lavado fui." },
+          { "tipo": "estrofa", "texto": "Aunque sea siempre fiel,\naunque llore sin cesar,\ndel pecado no podré\njustificación lograr;\nsolo en ti teniendo fe\npuedo mi perdón hallar." },
+          { "tipo": "estrofa", "texto": "Mientras haya de vivir,\ny al instante de expirar,\ncuando vaya a responder\nen tu augusto tribunal,\nsé mi escondedero fiel,\nRoca de la eternidad." }
+        ]
+      },
+      {
+        "numero": 5,
+        "titulo": "Cristo me ama",
+        "autor": "Anna B. Warner",
+        "estrofas": [
+          { "tipo": "estrofa", "texto": "Cristo me ama, bien lo sé,\nsu Palabra me hace ver\nque los niños son de aquel\nquien es nuestro amigo fiel." },
+          { "tipo": "coro", "texto": "Cristo me ama,\nCristo me ama,\nCristo me ama,\nla Biblia dice así." },
+          { "tipo": "estrofa", "texto": "Cristo me ama, pues murió\ny el cielo me abrió;\nél mis culpas quitará\ny la entrada me dará." }
+        ]
+      }
+    ]
+  }
+]
