@@ -20,7 +20,7 @@
 .PARAMETER SesionMin
   Minutos sin usar la consola tras los que se vuelve a pedir el PIN. Por defecto 720 (12 horas).
 .PARAMETER Red
-  Habilita el visor en la red local. Es el valor por defecto de iniciar-windows.cmd.
+  Habilita el visor en la red local desde el arranque.
 .PARAMETER SoloLocal
   Limita el acceso al equipo que ejecuta el servidor.
 .PARAMETER Internet
@@ -83,7 +83,7 @@ OPCIONES
   -Puerto 4000      Usa un puerto fijo para la app, el panel HTTPS y el visor.
   -SesionMin 30     Minutos sin usar la consola antes de volver a pedir el PIN
                     (por defecto 720 = 12 horas).
-  -Red              Habilita el visor en la red local al ejecutar serve.ps1 directamente.
+  -Red              Habilita el visor en la red local desde el arranque.
   -SoloLocal        Limita el acceso al equipo que ejecuta el servidor.
   -OrigenRemoto https://biblia.tu-dominio.com
                     Autoriza ese dominio HTTPS por un túnel local; requiere PIN previo.
@@ -117,21 +117,14 @@ if ($Menu -or ($PSBoundParameters.Count -eq 0 -and -not [Console]::IsInputRedire
   while ($true) {
     Write-Host ''
     Write-Host 'Biblia'
-    Write-Host '  1. Iniciar Biblia'
-    Write-Host '  2. Iniciar con acceso al panel por IP (HTTPS)'
-    Write-Host '  3. Cambiar PIN'
-    Write-Host '  4. Restablecer PIN olvidado'
-    Write-Host '  5. Compartir por internet (Cloudflare)'
-    Write-Host '  0. Salir'
+    Write-Host '  1. Iniciar'
+    Write-Host '  2. Cambiar PIN'
     $opcion = Read-Host 'Elige una opción [1]'
     if ($null -eq $opcion -or $opcion -eq '0') { exit 0 }
     if ($opcion -in '', '1', '2', '3', '4', '5') { break }
     Write-Host 'Elige una de las opciones del menú.'
   }
-  if ($opcion -eq '2') { $PanelRed = $true }
-  if ($opcion -eq '3') { $changePinOnStart = $true }
-  if ($opcion -eq '4') { $RestablecerPin = $true }
-  if ($opcion -eq '5') { $Internet = $true }
+  if ($opcion -eq '2') { $changePinOnStart = $true }
 }
 if ($PanelRed -and $SoloLocal) {
   Write-Host 'Elige -PanelRed para compartir el panel o -SoloLocal para usar solo esta PC.'
@@ -276,18 +269,20 @@ $script:Rev = 0
 $script:FailCount = 0
 $script:FailUntil = [DateTime]::MinValue
 
-$LanIps = @()
-if ($Red) {
+function Get-LanIps {
   try {
-    $LanIps = @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+    return @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
       Where-Object { $_.OperationalStatus -eq 'Up' } |
       ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
       ForEach-Object { $_.Address } |
       Where-Object { $_.AddressFamily -eq 'InterNetwork' -and -not [Net.IPAddress]::IsLoopback($_) } |
       ForEach-Object { $_.ToString() } |
       Select-Object -Unique)
-  } catch { $LanIps = @() }
+  } catch { return @() }
 }
+
+$LanIps = @()
+if ($Red) { $LanIps = @(Get-LanIps) }
 
 $Csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https://itunes.apple.com https://lrclib.net https://raw.githubusercontent.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 $SecHeaders = [ordered]@{
@@ -492,6 +487,31 @@ function Invoke-Auth($c) {
       }
       Send-Json $c 200 'OK' (ConvertTo-Json -Compress -InputObject $session)
     }
+    { $_ -in 'compartir', 'abrirred', 'cerrarred', 'abririnternet', 'cerrarinternet', 'certificadored' } {
+      if ($c.Panel -or (Test-Remote $c) -or -not (Test-Loopback $c)) {
+        Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'
+        return
+      }
+      $why = Test-Signature $c
+      if ($why) { Send-Json $c 401 'Unauthorized' ('{"error":"' + $why + '"}'); return }
+      switch ($action) {
+        'compartir' {
+          if ($SharingAction) { Send-Json $c 200 'OK' '{"pending":true}' }
+          else { Send-Json $c 200 'OK' $SharingResult }
+        }
+        'certificadored' {
+          if ($PanelRed -and $panelCertificate.TrustFile) {
+            $bytes = [IO.File]::ReadAllBytes($panelCertificate.TrustFile)
+            Send-Bytes $c 200 'OK' @{ 'Content-Type' = 'application/x-x509-ca-cert'; 'Cache-Control' = 'no-store' } $bytes
+          } else { Send-Json $c 404 'Not Found' '{"error":"certificado"}' }
+        }
+        default {
+          if ($SharingAction) { Send-Json $c 409 'Conflict' '{"error":"ocupado"}'; return }
+          $script:SharingAction = $action
+          Send-Json $c 202 'Accepted' '{"pending":true}'
+        }
+      }
+    }
     'salir' {
       $why = Test-Signature $c
       if ($why) { Send-Json $c 401 'Unauthorized' ('{"error":"' + $why + '"}'); return }
@@ -677,7 +697,7 @@ function Test-RequestHost($c) {
     Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return $false
   }
   # El modo local solo acepta conexiones de loopback.
-  if (-not $Red -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return $false }
+  if (-not $Red -and -not $PanelRed -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return $false }
   return $true
 }
 
@@ -859,6 +879,117 @@ function Open-Listeners([Net.IPAddress[]]$addresses, [int]$firstPort, [bool]$fix
   throw "No se pudo abrir un puerto a partir del $firstPort. Indica uno disponible con -Puerto."
 }
 
+function Set-PanelNetwork {
+  $ips = @(Get-LanIps)
+  if (-not $ips.Count) { throw 'Conecta esta PC a la red para habilitar el panel por IP.' }
+  . (Join-Path $Root 'server/panel-cert.ps1')
+  $certificate = Get-PanelCertificate $ips $Conf $CertificadoPanel
+  try {
+    if (-not $Red) {
+      $addresses = @($ips | ForEach-Object { [Net.IPAddress]::Parse($_) })
+      $script:PanelListeners = (Open-Listeners $addresses $Puerto $true).Listeners
+    }
+  } catch {
+    $certificate.Cert.Dispose()
+    throw
+  }
+  $script:panelCertificate = $certificate
+  $script:LanIps = $ips
+  $script:PanelHosts = @($ips | ForEach-Object { "${_}:$Puerto" })
+  $script:PanelUrls = @($PanelHosts | ForEach-Object { "https://$_" })
+  $script:LanUrls = @($PanelHosts | ForEach-Object { "http://$_" })
+  $script:AllowedHosts = @($AllowedHosts + $PanelHosts | Select-Object -Unique)
+  $script:PanelRed = $true
+}
+
+function Close-PanelNetwork {
+  if (-not $PanelRed) { return }
+  foreach ($listener in $PanelListeners) { $listener.Stop() }
+  $script:PanelListeners = @()
+  foreach ($conn in @($conns)) {
+    if ($conn.Client.Client -and -not [Net.IPAddress]::IsLoopback($conn.Client.Client.LocalEndPoint.Address)) {
+      Close-Conn $conn
+    }
+  }
+  if (-not $Red) {
+    $script:AllowedHosts = @($AllowedHosts | Where-Object { $_ -notin $PanelHosts })
+    $script:LanUrls = @()
+    $script:LanIps = @()
+  }
+  $script:PanelRed = $false
+  $script:PanelHosts = @()
+  $script:PanelUrls = @()
+  $panelCertificate.Cert.Dispose()
+  $script:panelCertificate = $null
+}
+
+function Set-PublicPanel([string]$origin) {
+  $script:RemoteAccess = New-RandomHex 32
+  $script:OrigenRemoto = $origin
+  $script:RemoteHost = $origin.Substring(8)
+  $script:AllowedHosts += $RemoteHost
+  $script:PublicPanelUrl = "$origin/#acceso=$RemoteAccess"
+}
+
+function Close-PublicPanel {
+  Stop-CloudflareTunnel
+  $script:AllowedHosts = @($AllowedHosts | Where-Object { $_ -ne $RemoteHost })
+  $script:OrigenRemoto = ''
+  $script:RemoteHost = ''
+  $script:RemoteAccess = ''
+  $script:PublicPanelUrl = ''
+}
+
+function Update-Sharing {
+  if (-not $SharingAction) { return }
+  try {
+    switch ($SharingAction) {
+      'abrirred' { if (-not $PanelRed) { Set-PanelNetwork } }
+      'cerrarred' { Close-PanelNetwork }
+      'cerrarinternet' { if ($RemoteAccess) { Close-PublicPanel } }
+      'abririnternet' {
+        if ($RemoteAccess) { break }
+        if ($OrigenRemoto) { throw 'Ya hay un túnel configurado.' }
+        if (-not $CloudflareProcess) {
+          if (-not $CloudflareDownload) {
+            $script:CloudflareDownload = [PowerShell]::Create()
+            [void]$CloudflareDownload.AddScript({
+              param($Directory, $Conf, $Run)
+              $ErrorActionPreference = 'Stop'
+              . (Join-Path $Directory 'server/cloudflare.ps1')
+              Get-CloudflaredPath
+            }).AddArgument($Root).AddArgument($Conf).AddArgument($Run)
+            $script:CloudflareDownloadResult = $CloudflareDownload.BeginInvoke()
+          }
+          if (-not $CloudflareDownloadResult.IsCompleted) { return }
+          try { $client = @($CloudflareDownload.EndInvoke($CloudflareDownloadResult))[0] }
+          finally {
+            $CloudflareDownload.Dispose()
+            $script:CloudflareDownload = $null
+          }
+          Start-CloudflareProcess $client
+          $script:CloudflareNextPoll = [DateTime]::UtcNow
+          $script:CloudflareDeadline = $CloudflareNextPoll.AddSeconds(35)
+        }
+        if ($CloudflareProcess.HasExited -or [DateTime]::UtcNow -ge $CloudflareDeadline) {
+          throw 'Cloudflare no pudo conectar a tiempo.'
+        }
+        if ([DateTime]::UtcNow -lt $CloudflareNextPoll) { return }
+        $script:CloudflareNextPoll = [DateTime]::UtcNow.AddMilliseconds(250)
+        $origin = Get-CloudflareOrigin
+        if (-not $origin) { return }
+        Set-PublicPanel $origin
+      }
+    }
+    $script:SharingResult = '{"ok":true}'
+  } catch {
+    if ($SharingAction -eq 'abririnternet') { Stop-CloudflareTunnel }
+    Write-Host $_.Exception.Message
+    $script:SharingResult = '{"error":"conexion"}'
+  }
+  $script:SharingAction = ''
+}
+
 $requestedPort = $Puerto
 $bindAddr = [Net.IPAddress]::Loopback
 if ($Red) { $bindAddr = [Net.IPAddress]::Any }
@@ -871,6 +1002,14 @@ $PanelHosts = @()
 $PanelUrls = @()
 $panelCertificate = $null
 $CloudflareProcess = $null
+$CloudflareDownload = $null
+$CloudflareDownloadResult = $null
+$CloudflareDeadline = [DateTime]::MinValue
+$CloudflareNextPoll = [DateTime]::MinValue
+$SharingAction = ''
+$SharingResult = '{}'
+$PanelListeners = @()
+. (Join-Path $Root 'server/cloudflare.ps1')
 $conns = New-Object Collections.ArrayList
 try {
   if ($PanelRed -and -not $LanIps.Count) {
@@ -887,21 +1026,11 @@ try {
   $AllowedOrigins = @($Url, "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
   if ($RemoteHost) { $AllowedHosts += $RemoteHost }
 
-  if ($PanelRed) {
-    $PanelHosts = $lanHosts
-    $PanelUrls = @($PanelHosts | ForEach-Object { "https://$_" })
-    . (Join-Path $Root 'server/panel-cert.ps1')
-    $panelCertificate = Get-PanelCertificate $LanIps $Conf $CertificadoPanel
-  }
+  if ($PanelRed) { Set-PanelNetwork }
   New-Item -ItemType Directory -Force -Path $Run | Out-Null
   if ($Internet) {
-    . (Join-Path $Root 'server/cloudflare.ps1')
     try {
-      $OrigenRemoto = Start-CloudflareTunnel
-      $RemoteAccess = New-RandomHex 32
-      $RemoteHost = $OrigenRemoto.Substring(8)
-      $AllowedHosts += $RemoteHost
-      $PublicPanelUrl = "$OrigenRemoto/#acceso=$RemoteAccess"
+      Set-PublicPanel (Start-CloudflareTunnel)
     } catch {
       Stop-CloudflareTunnel
       Write-Host $_.Exception.Message
@@ -942,8 +1071,9 @@ try {
   Write-Host '=============================================='
   if (-not $NoAbrir) { Start-Process $openUrl }
   while ($true) {
+    Update-Sharing
     $busy = $false
-    foreach ($l in $listeners) {
+    foreach ($l in ($listeners + $PanelListeners)) {
       while ($l.Pending() -and $conns.Count -lt $MaxConns) {
         $client = $l.AcceptTcpClient()
         $client.NoDelay = $true
@@ -967,9 +1097,10 @@ try {
     if (-not $busy) { Start-Sleep -Milliseconds 15 }
   }
 } finally {
+  if ($CloudflareDownload) { $CloudflareDownload.Stop(); $CloudflareDownload.Dispose() }
   if ($CloudflareProcess) { Stop-CloudflareTunnel }
   foreach ($c in @($conns)) { Close-Conn $c }
-  foreach ($l in $listeners) { try { $l.Stop() } catch {} }
+  foreach ($l in ($listeners + $PanelListeners)) { try { $l.Stop() } catch {} }
   if ($panelCertificate) { $panelCertificate.Cert.Dispose() }
   Remove-Item -Recurse -Force $Run -ErrorAction SilentlyContinue
 }

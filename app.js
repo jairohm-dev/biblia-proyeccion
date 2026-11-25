@@ -3739,10 +3739,12 @@ function bindEvents() {
 
   $('#obsBtn').addEventListener('click', openObs);
   $('#obsChip').addEventListener('click', openObs);
-  $('#panelLanBtn').addEventListener('click', () => {
-    renderCopyLinks('#panelLanLinks', 'panelLanLink', auth.panelUrls, 'Enlace de acceso al panel');
-    $('#panelLanDialog').showModal();
+  $('#panelLanBtn').addEventListener('click', openPanelSharing);
+  $('#panelSharingOptions').addEventListener('click', (event) => {
+    const mode = event.target.closest('[data-sharing]')?.dataset.sharing;
+    if (mode) changePanelSharing(mode);
   });
+  $('#panelCertDownload').addEventListener('click', downloadPanelCertificate);
   for (const id of ['#obsDialog', '#panelLanDialog']) {
     $(id).addEventListener('click', (e) => {
       const b = e.target.closest('[data-copy]');
@@ -4160,7 +4162,77 @@ function applyTheme(theme) {
   else delete document.documentElement.dataset.theme;
 }
 
-// La consola arranca solo después del PIN (la llama auth.js cuando el servidor entrega su HTML).
+const internetPanelLink = (url) => new URL(url).hostname.endsWith('.trycloudflare.com');
+const sharingActive = (mode) => auth.panelUrls.some((url) => internetPanelLink(url) === (mode === 'internet'));
+let sharingBusy = false;
+
+function renderPanelSharing(message = '') {
+  $('#panelSharingOptions').hidden = DESKTOP || !localConsole();
+  $('#panelSharingStatus').textContent = message;
+  $('#panelSharingStatus').hidden = !message;
+  $('#panelShareLan').disabled = sharingBusy;
+  $('#panelShareInternet').disabled = sharingBusy;
+  $('#panelShareLan').textContent = sharingActive('red') ? 'Cerrar acceso en la misma red' : 'Compartir en la misma red';
+  $('#panelShareInternet').textContent = sharingActive('internet') ? 'Cerrar acceso por internet' : 'Compartir por internet';
+  $('#panelLanCertificate').hidden = !sharingActive('red');
+  $('#panelSharingPin').hidden = !auth.panelUrls.length;
+  renderCopyLinks('#panelLanLinks', 'panelLanLink', auth.panelUrls, 'Enlace de acceso al panel');
+}
+
+async function openPanelSharing() {
+  renderPanelSharing();
+  $('#panelLanDialog').showModal();
+  if (!sharingBusy && await checkSession()) renderPanelSharing();
+}
+
+async function changePanelSharing(mode) {
+  if (sharingBusy) return;
+  const enabling = !sharingActive(mode);
+  sharingBusy = true;
+  renderPanelSharing(enabling ? 'Preparando el enlace…' : 'Cerrando el acceso…');
+  let message = '';
+  try {
+    const action = (enabling ? 'abrir' : 'cerrar') + mode;
+    const res = await signedFetch('api/auth?accion=' + action, { timeout: 8000 });
+    if (res.status === 409) { message = 'Hay otro cambio en curso. Vuelve a intentarlo en unos segundos.'; return; }
+    if (!res.ok) throw new Error('compartir');
+    const deadline = Date.now() + 180000;
+    while (Date.now() < deadline) {
+      await sleep(750);
+      const status = await signedFetch('api/auth?accion=compartir', { timeout: 8000 });
+      if (!status.ok) throw new Error('compartir');
+      const result = await status.json();
+      if (result.error) throw new Error(result.error);
+      if (!result.pending && await checkSession() && sharingActive(mode) === enabling) return;
+    }
+    throw new Error('tiempo');
+  } catch {
+    await checkSession();
+    message = mode === 'red'
+      ? 'No se pudo cambiar el acceso. Comprueba que este equipo siga conectado a la red.'
+      : 'No se pudo cambiar el acceso. Comprueba la conexión a internet.';
+  } finally {
+    sharingBusy = false;
+    renderPanelSharing(message);
+  }
+}
+
+async function downloadPanelCertificate() {
+  try {
+    const res = await signedFetch('api/auth?accion=certificadored', { timeout: 8000 });
+    if (!res.ok) throw new Error('certificado');
+    const url = URL.createObjectURL(await res.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'Biblia-autoridad-red.cer';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch {
+    toast('No hay un certificado de Biblia para descargar.');
+  }
+}
+
+// La consola arranca después del PIN, cuando auth.js recibe el HTML.
 function startConsole() {
   bootConsole();
   initResizer();
@@ -4176,7 +4248,7 @@ function startConsole() {
   // Al volver a entrar, OBS y el proyector se ponen al día al instante: lo que está en vivo y sus
   // imágenes o videos (si el servidor se reinició, los perdió). Mientras tanto nunca se apagaron.
   auth.onUnlock = () => {
-    $('#panelLanBtn').hidden = !auth.panelUrls.length;
+    $('#panelLanBtn').hidden = (DESKTOP || !localConsole()) && !auth.panelUrls.length;
     resyncServer();
     scheduleSettingsSave();
   };

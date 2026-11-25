@@ -584,8 +584,17 @@
           <button class="link-btn strong" type="submit" value="close">Listo</button>
         </header>
         <div class="obs-link">
-          <div class="obs-sub">Abre el enlace completo en el otro dispositivo y entra con el PIN de Biblia.</div>
+          <div id="panelSharingOptions" hidden>
+            <button class="btn" type="button" id="panelShareLan" data-sharing="red">Compartir en la misma red</button>
+            <button class="btn" type="button" id="panelShareInternet" data-sharing="internet">Compartir por internet</button>
+            <p class="obs-sub" id="panelSharingStatus" role="status" hidden></p>
+            <p class="obs-sub" id="panelLanCertificate" hidden>
+              Para usar el enlace por IP, instala el certificado de Biblia como autoridad de confianza en el otro dispositivo.
+              <button class="link-btn" type="button" id="panelCertDownload">Descargar certificado</button>
+            </p>
+          </div>
           <div id="panelLanLinks"></div>
+          <p class="obs-sub" id="panelSharingPin" hidden>Abre el enlace completo en el otro dispositivo y entra con el PIN de Biblia.</p>
         </div>
       </form>
     </dialog>

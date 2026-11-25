@@ -205,6 +205,8 @@ while :; do sleep 0.1; done
   await expect(200, '/api/auth?accion=entrar', { method: 'POST', body: JSON.stringify({ verifier, pub }), headers: invite });
   await expect(403, '/api/app', signed('/api/app'));
   await expect(200, '/api/app', signed('/api/app', '', invite));
+  const closeInternet = '/api/auth?accion=cerrarinternet';
+  await expect(403, closeInternet, signed(closeInternet, '', invite));
   const snapshot = await expect(200, settingsPath, signed(settingsPath, '', invite));
   assert.equal(snapshot.text, settings);
   assert.equal(snapshot.headers.etag, `"${hash(settings)}"`);
@@ -213,6 +215,31 @@ while :; do sleep 0.1; done
   assert.deepEqual(JSON.parse(localSession.text).panelUrls, [`${tunnelOrigin}/#acceso=${access}`]);
   await stop();
   assert.equal(await readFile(stopped, 'utf8'), 'cerrado');
+
+  await start('local');
+  origin = tunnelOrigin;
+  const localOrigin = { Origin: `http://localhost:${port}` };
+  const localSigned = path => ({ ...signed(path, '', localOrigin), remote: false });
+  const waitSharing = async () => {
+    const path = '/api/auth?accion=compartir';
+    for (let i = 0; i < 40; i++) {
+      const result = JSON.parse((await request(path, localSigned(path))).text);
+      if (!result.pending) { assert.equal(result.ok, true); return; }
+      await delay(100);
+    }
+    throw new Error('No se completó el cambio de acceso.');
+  };
+  const openInternet = '/api/auth?accion=abririnternet';
+  await expect(401, openInternet, { remote: false, method: 'POST', headers: localOrigin });
+  await expect(200, '/api/auth?accion=entrar', { remote: false, method: 'POST',
+    headers: localOrigin, body: JSON.stringify({ verifier, pub }) });
+  await expect(202, openInternet, localSigned(openInternet));
+  await waitSharing();
+  await expect(200, '/');
+  await expect(202, closeInternet, localSigned(closeInternet));
+  await waitSharing();
+  await expect(403, '/');
+  await expect(200, '/', { remote: false });
   console.log(`OK: ${checks} comprobaciones de acceso por internet, PIN, ajustes, visor y modo local.`);
 } finally {
   await stop();

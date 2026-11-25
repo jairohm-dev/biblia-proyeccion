@@ -38,8 +38,7 @@ function Get-CloudflaredPath {
   return $target
 }
 
-function Start-CloudflareTunnel {
-  $client = Get-CloudflaredPath
+function Start-CloudflareProcess([string]$client) {
   $config = Join-Path $Run 'cloudflared.yml'
   Set-Content -LiteralPath $config -Value '{}' -Encoding ASCII
   $errorLog = Join-Path $Run 'cloudflared.log'
@@ -49,14 +48,23 @@ function Start-CloudflareTunnel {
     '--loglevel', 'info', '--url', "http://127.0.0.1:$Puerto", '--metrics', '127.0.0.1:0')
   $script:CloudflareProcess = Start-Process -FilePath $client -ArgumentList $arguments -NoNewWindow -PassThru `
     -RedirectStandardOutput $outputLog -RedirectStandardError $errorLog
+}
+
+function Get-CloudflareOrigin {
+  $logs = @((Join-Path $Run 'cloudflared.log'), (Join-Path $Run 'cloudflared.out'))
+  $status = (Get-Content -Raw -LiteralPath $logs -ErrorAction SilentlyContinue) -join "`n"
+  if ($status.Contains('Registered tunnel connection') -and
+      $status -cmatch '\|\s*(https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com)\s*\|') {
+    return $Matches[1]
+  }
+}
+
+function Start-CloudflareTunnel {
+  Start-CloudflareProcess (Get-CloudflaredPath)
   $deadline = [DateTime]::UtcNow.AddSeconds(35)
   while (-not $script:CloudflareProcess.HasExited -and [DateTime]::UtcNow -lt $deadline) {
-    $status = Get-Content -Raw -LiteralPath $errorLog, $outputLog -ErrorAction SilentlyContinue
-    $status = $status -join "`n"
-    if ($status.Contains('Registered tunnel connection') -and
-        $status -cmatch '\|\s*(https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com)\s*\|') {
-      return $Matches[1]
-    }
+    $origin = Get-CloudflareOrigin
+    if ($origin) { return $origin }
     Start-Sleep -Milliseconds 250
   }
   throw 'Cloudflare no pudo conectar a tiempo.'

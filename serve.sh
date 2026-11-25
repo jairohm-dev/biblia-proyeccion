@@ -83,22 +83,13 @@ done
 if [ "$MENU" = 1 ] || { [ "$#" = 0 ] && [ "$FIXED_PORT" = 0 ] && [ -t 0 ] && [ -z "$REMOTE_ORIGIN" ]; }; then
   while :; do
     printf '\nBiblia\n'
-    echo '  1. Iniciar Biblia'
-    echo '  2. Iniciar con acceso al panel por IP (HTTPS)'
-    echo '  3. Cambiar PIN'
-    echo '  4. Restablecer PIN olvidado'
-    echo '  5. Compartir proyección en la red (OBS)'
-    echo '  6. Compartir por internet (Cloudflare)'
-    echo '  0. Salir'
+    echo '  1. Iniciar'
+    echo '  2. Cambiar PIN'
     printf 'Elige una opción [1]: '
     IFS= read -r opcion || exit 0
     case "$opcion" in
       ''|1) break ;;
-      2) PANEL_RED=1; RED=1; break ;;
-      3) CHANGE_PIN=1; break ;;
-      4) RESET_PIN=1; break ;;
-      5) RED=1; break ;;
-      6) INTERNET=1; break ;;
+      2) CHANGE_PIN=1; break ;;
       0) exit 0 ;;
       *) echo 'Elige una de las opciones del menú.' ;;
     esac
@@ -248,7 +239,8 @@ trap stop EXIT
 trap 'exit 0' INT TERM HUP
 
 LAN_IP=""
-if [ "$RED" = 1 ]; then
+find_lan_ip() {
+  LAN_IP=""
   if command -v ipconfig >/dev/null; then
     iface="$(route -n get default 2>/dev/null | awk '$1 == "interface:" {print $2; exit}' || true)"
     LAN_IP="$(ipconfig getifaddr "${iface:-en0}" 2>/dev/null || ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
@@ -256,13 +248,13 @@ if [ "$RED" = 1 ]; then
     LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
   fi
   if ! [[ "$LAN_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || [[ "$LAN_IP" == 127.* ]]; then LAN_IP=""; fi
-fi
+}
+[ "$RED" != 1 ] || find_lan_ip
 
 PANEL_ORIGIN=""
-if [ "$PANEL_RED" = 1 ]; then
-  if [ -z "$LAN_IP" ]; then echo 'Conecta este equipo a la red para habilitar el panel por IP.'; exit 1; fi
-  if [ ! -f "$MODS/mod_ssl.so" ]; then echo 'Apache necesita mod_ssl para abrir el panel por HTTPS.'; exit 1; fi
-  PANEL_ORIGIN="https://$LAN_IP:$PORT"
+prepare_panel() {
+  [ -n "$LAN_IP" ] && [ -f "$MODS/mod_ssl.so" ] || return 1
+  local -a cert_lock
   if command -v lockf >/dev/null; then
     cert_lock=(lockf -k -t 20 "$CONF/panel-cert.lock")
   else
@@ -271,8 +263,13 @@ if [ "$PANEL_RED" = 1 ]; then
   if ! "${cert_lock[@]}" bash "$DIR/server/panel-cert.sh" "$OPENSSL" "$CONF" "$RUN" "$LAN_IP"; then
     echo 'No se pudo preparar el certificado HTTPS de Biblia.'
     if [ -f "$RUN/cert.log" ]; then tail -4 "$RUN/cert.log"; fi
-    exit 1
+    return 1
   fi
+  PANEL_ORIGIN="https://$LAN_IP:$PORT"
+}
+if [ "$PANEL_RED" = 1 ] && ! prepare_panel; then
+  echo 'Comprueba la conexión de red y que Apache tenga habilitado mod_ssl.'
+  exit 1
 fi
 
 load() { [ -f "$MODS/$2" ] && echo "LoadModule $1 $MODS/$2"; return 0; }
@@ -305,7 +302,7 @@ load env_module mod_env.so
 load headers_module mod_headers.so
 if [ "$PANEL_RED" = 1 ]; then
   load ssl_module mod_ssl.so
-  echo "Listen $LAN_IP:$PORT https"
+  if [ "$BIND" != 0.0.0.0 ]; then echo "Listen $LAN_IP:$PORT https"; fi
 fi
 cat <<EOF
 
@@ -418,6 +415,13 @@ fi
 }
 write_httpd_config > "$RUN/httpd.conf"
 
+reload_httpd() {
+  write_httpd_config > "$RUN/httpd.next" &&
+    "$HTTPD" -t -f "$RUN/httpd.next" &&
+    mv "$RUN/httpd.next" "$RUN/httpd.conf" &&
+    "$HTTPD" -k graceful -f "$RUN/httpd.conf"
+}
+
 "$HTTPD" -f "$RUN/httpd.conf" -DFOREGROUND &
 SERVER=$!
 # En macOS: que el equipo y la pantalla no se duerman mientras el servidor esté encendido.
@@ -433,9 +437,7 @@ if [ "$INTERNET" = 1 ]; then
   . "$DIR/server/cloudflare.sh"
   if start_cloudflare; then
     # Actualiza la lista de hosts después de que Biblia haya reservado su puerto.
-    write_httpd_config > "$RUN/httpd.conf"
-    "$HTTPD" -t -f "$RUN/httpd.conf"
-    "$HTTPD" -k graceful -f "$RUN/httpd.conf"
+    reload_httpd
   else
     stop_cloudflare
     echo 'No se pudo crear el enlace de internet. Biblia sigue disponible en este equipo.'
@@ -477,4 +479,55 @@ if [ -z "${NO_ABRIR:-}" ]; then
   if command -v open >/dev/null; then open "$OPEN_URL" 2>/dev/null || true
   elif command -v xdg-open >/dev/null; then xdg-open "$OPEN_URL" >/dev/null 2>&1 || true; fi
 fi
+apply_sharing() {
+  case "$1" in
+    abrirred)
+      [ "$PANEL_RED" = 0 ] || return 0
+      find_lan_ip
+      if ! prepare_panel; then [ "$BIND" = 0.0.0.0 ] || LAN_IP=""; return 1; fi
+      PANEL_RED=1
+      if reload_httpd; then return 0; fi
+      PANEL_RED=0; PANEL_ORIGIN=""
+      [ "$BIND" = 0.0.0.0 ] || LAN_IP=""
+      reload_httpd || true
+      return 1 ;;
+    cerrarred)
+      [ "$PANEL_RED" = 1 ] || return 0
+      local old_ip="$LAN_IP" old_origin="$PANEL_ORIGIN"
+      PANEL_RED=0; PANEL_ORIGIN=""
+      [ "$BIND" = 0.0.0.0 ] || LAN_IP=""
+      if reload_httpd; then return 0; fi
+      PANEL_RED=1; LAN_IP="$old_ip"; PANEL_ORIGIN="$old_origin"
+      reload_httpd || true
+      return 1 ;;
+    abririnternet)
+      [ -z "$REMOTE_ACCESS" ] || return 0
+      [ -z "$REMOTE_ORIGIN" ] || return 1
+      . "$DIR/server/cloudflare.sh"
+      if start_cloudflare && reload_httpd; then return 0; fi
+      stop_cloudflare
+      REMOTE_ORIGIN=""; REMOTE_HOST=""; REMOTE_ACCESS=""
+      reload_httpd || true
+      return 1 ;;
+    cerrarinternet)
+      [ -n "$REMOTE_ACCESS" ] || return 0
+      stop_cloudflare
+      REMOTE_ORIGIN=""; REMOTE_HOST=""; REMOTE_ACCESS=""
+      reload_httpd ;;
+    *) return 1 ;;
+  esac
+}
+
+while kill -0 "$SERVER" 2>/dev/null; do
+  if [ -f "$RUN/compartir/accion" ]; then
+    if apply_sharing "$(cat "$RUN/compartir/accion")"; then
+      printf '{"ok":true}' > "$RUN/compartir.json"
+    else
+      printf '{"error":"conexion"}' > "$RUN/compartir.json"
+    fi
+    rm -f "$RUN/compartir/accion"
+    rmdir "$RUN/compartir"
+  fi
+  sleep 0.25
+done
 wait "$SERVER"

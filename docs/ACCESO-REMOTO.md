@@ -5,21 +5,19 @@ Desde la app de escritorio puedes compartir la proyección con OBS.
 
 ## Por IP en la misma red
 
-1. En Mac, ejecuta `./serve.sh` en Terminal. En Windows, abre `iniciar-windows.cmd`.
-   Elige **Iniciar con acceso al panel por IP (HTTPS)** mientras ambos dispositivos están en la misma red.
-2. Si es la primera vez que usas Biblia, crea el PIN en el navegador de la PC que ejecuta el servidor.
-3. Copia `Biblia-autoridad-red.cer` desde la ruta que muestra la terminal y agrégalo como
-   autoridad raíz de confianza en cada dispositivo que vaya a controlar el panel. Transfiere el
-   certificado público directamente desde la PC de Biblia. En iPhone o iPad, habilita también
+1. Abre `./serve.sh` o `iniciar-windows.cmd` y elige **Iniciar**. Si es la primera vez, crea el PIN en ese equipo.
+2. Abre **Acceso al panel → Compartir en la misma red**.
+3. Pulsa **Descargar certificado**. Transfiere el certificado público directamente desde el equipo de Biblia
+   y agrégalo como autoridad raíz de confianza en el dispositivo que usará el panel. En iPhone o iPad, habilita también
    la confianza SSL/TLS para el certificado. [Guía de Apple](https://support.apple.com/en-ie/102390)
 4. En Biblia, pulsa **Acceso al panel → Copiar**. Abre ese enlace en el otro dispositivo
-   e introduce el PIN. La terminal también muestra el enlace, por ejemplo `https://192.168.1.25:3737`.
+   e introduce el PIN.
 
 `localhost`, el panel por IP y OBS usan el mismo puerto. Si el 3737 está ocupado, los tres usan
 el siguiente disponible. En Windows, al abrir la IP por HTTP, Biblia te lleva a HTTPS en ese mismo puerto.
 El enlace del visor se copia desde **OBS**.
 Con el panel por IP activo en Mac, el visor de red también usa HTTPS y el mismo certificado.
-Reinicia Biblia con la misma opción para volver a habilitar el panel por IP.
+Para cerrar el acceso, pulsa **Cerrar acceso en la misma red** en el panel del equipo servidor.
 
 En Mac puedes iniciar directamente con `./serve.sh --panel-red`. Para un puerto fijo añade el número,
 por ejemplo `./serve.sh --panel-red 4000`.
@@ -30,15 +28,14 @@ que cubra las IP del equipo y cuya autoridad sea de confianza en los dispositivo
 
 ## Desde internet con Cloudflare
 
-1. En Mac o Linux, abre `./serve.sh` en Terminal. En Windows, abre `iniciar-windows.cmd`.
-   Elige **Compartir por internet (Cloudflare)**. Si hace falta, Biblia descarga el cliente oficial
-   en tu equipo y verifica la descarga. Funciona sin una cuenta de Cloudflare.
-2. Entra al panel que se abre en el navegador. Si es tu primera vez, crea el PIN en ese equipo.
-   Pulsa **Acceso al panel → Copiar**. También puedes copiar el enlace de la terminal.
+1. Abre `./serve.sh` o `iniciar-windows.cmd` y elige **Iniciar**.
+2. Entra al panel con el PIN y abre **Acceso al panel → Compartir por internet**. Si hace falta,
+   Biblia descarga el cliente oficial de Cloudflare y verifica la descarga. Funciona sin una cuenta.
+   Cuando aparezca el enlace, pulsa **Copiar**.
 3. Comparte el enlace completo con las personas que van a operar Biblia. Pueden abrirlo con datos
    móviles o en otra red y entrar con el PIN. La parte después del `#` va incluida en el enlace.
-4. Mantén abierta la ventana del servidor mientras lo uses. Para cerrar el acceso, pulsa Ctrl+C.
-   Al volver a elegir esta opción se genera otro enlace.
+4. Mantén abierta la ventana del servidor mientras lo uses. Puedes pulsar **Cerrar acceso por internet**
+   desde el panel y seguir usando Biblia. Cada vez que activas el acceso se genera otro enlace.
 
 Cloudflare se conecta desde el equipo que ejecuta Biblia. Comparte el puerto de la app sin abrir
 puertos entrantes en el router. Cada enlace es temporal. Cloudflare ofrece los Quick Tunnels para

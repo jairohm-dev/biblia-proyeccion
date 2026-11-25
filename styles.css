@@ -1286,6 +1286,9 @@ dialog.gate[open] .gate-card { animation: gate-in 0.5s var(--ease-out); }
 .obs-link { display: flex; flex-direction: column; gap: 4px; padding: 14px; border-radius: var(--r-md); background: var(--fill); }
 .obs-name { font-weight: 650; }
 .obs-sub { font-size: 13px; color: var(--label-2); }
+#panelSharingOptions { display: flex; flex-wrap: wrap; gap: 8px; }
+#panelSharingOptions[hidden] { display: none; }
+#panelSharingOptions > p { flex-basis: 100%; margin: 0; }
 .copy-row { display: flex; gap: 8px; margin-top: 6px; }
 .copy-row input {
   flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 0; border-radius: var(--r-sm);

@@ -60,17 +60,14 @@ cd biblia-proyeccion
 ./serve.sh            # menú de inicio en macOS / Linux
 ```
 
-En **Mac**, elige **Iniciar con acceso al panel por IP (HTTPS)** si quieres controlar Biblia
-desde otro dispositivo. En la consola, abre **Acceso al panel → Copiar**.
+En **Windows**, haz doble clic en `iniciar-windows.cmd`. En **Mac o Linux**, ejecuta `./serve.sh`.
+Elige **1. Iniciar** para abrir el navegador en `http://localhost:3737` o en el siguiente puerto
+disponible. Elige **2. Cambiar PIN** para abrir el formulario de cambio en el navegador.
 
-En **Windows**, haz doble clic en `iniciar-windows.cmd` y elige **Iniciar Biblia**.
-Se abre el navegador en `http://localhost:3737` o en el siguiente puerto disponible.
-El menú también permite cambiar el PIN y habilitar el acceso al panel desde otro dispositivo.
-En **OBS → Ver en otro dispositivo** puedes copiar el enlace para ver la proyección desde la misma red.
-
-Si el otro dispositivo está fuera de la red, elige **Compartir por internet (Cloudflare)**
-en el menú. En el panel, pulsa **Acceso al panel → Copiar** y envía el enlace completo a quien
-va a entrar con el PIN. Biblia descarga Cloudflare en el primer uso si hace falta.
+En el panel del equipo que ejecuta Biblia, abre **Acceso al panel**. Puedes habilitar o cerrar el
+acceso **en la misma red** o **por internet** y copiar el enlace para entrar con el PIN.
+Biblia descarga Cloudflare al habilitar el acceso por internet por primera vez si hace falta.
+Cuando compartes en la misma red, también puedes copiar el enlace de la proyección desde **OBS**.
 
 <details>
 <summary>Más opciones del servidor</summary>
@@ -107,7 +104,7 @@ Consulta la [guía de acceso por IP y por internet](docs/ACCESO-REMOTO.md).
 
 La red de una iglesia suele ser pública, así que la consola está protegida de verdad:
 
-- **Visor de red.** `iniciar-windows.cmd` habilita la proyección de solo lectura con una llave de visor. `-SoloLocal` limita el acceso a este equipo. En macOS y Linux, `--red` habilita el visor.
+- **Visor de red.** El enlace de OBS permite ver la proyección con una llave de visor. Para habilitarlo al arrancar, usa `-Red` en Windows o `--red` en macOS y Linux.
 - **Acceso por internet.** El túnel se abre desde Biblia hacia Cloudflare y apunta solo al servidor de la app. Para controlar se necesita el enlace completo y el PIN.
 - **La consola no existe sin PIN:** el servidor solo entrega `console.html` a un equipo que entró con el PIN. Esconder la portada desde el inspector no sirve de nada.
 - **Sesión firmada.** El PIN se deriva con PBKDF2-SHA256 (210 000 vueltas). Cada equipo crea una llave **ECDSA P-256 no exportable** y firma cada orden con hora y un número de un solo uso, así que una petición capturada no se puede repetir.

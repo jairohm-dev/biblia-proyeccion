@@ -111,6 +111,30 @@ case "$REQUEST_METHOD:$action" in
     fi
     reply '200 OK' "{\"ok\":true,\"viewer\":\"$(cat "$CONF/viewer.key")\",\"lanUrls\":$lan_urls,\"panelUrls\":$panel_urls}" ;;
 
+  POST:compartir|POST:abrirred|POST:cerrarred|POST:abririnternet|POST:cerrarinternet|POST:certificadored)
+    is_loopback && ! is_panel && [ "$HTTP_HOST" != "${BIBLIA_REMOTE_HOST:-}" ] ||
+      reply '403 Forbidden' '{"error":"solo-este-equipo"}'
+    check_origin
+    read_body 64
+    verify_signature
+    case "$action" in
+      compartir)
+        if [ -d "$RUN/compartir" ]; then reply '200 OK' '{"pending":true}'; fi
+        reply '200 OK' "$(cat "$RUN/compartir.json" 2>/dev/null || printf '{}')" ;;
+      certificadored)
+        cert="$CONF/Biblia-autoridad-red.cer"
+        [ -n "${BIBLIA_PANEL_ORIGIN:-}" ] && [ -s "$cert" ] || reply '404 Not Found' '{"error":"certificado"}'
+        printf 'Content-Type: application/x-x509-ca-cert\r\nCache-Control: no-store\r\n\r\n'
+        cat "$cert" ;;
+      *)
+        mkdir "$RUN/compartir" 2>/dev/null || reply '409 Conflict' '{"error":"ocupado"}'
+        if ! { printf '%s\n' "$action" > "$WORK/accion" && mv "$WORK/accion" "$RUN/compartir/accion"; }; then
+          rmdir "$RUN/compartir"
+          reply '503 Service Unavailable' '{"error":"conexion"}'
+        fi
+        reply '202 Accepted' '{"pending":true}' ;;
+    esac ;;
+
   POST:salir)
     check_origin
     read_body 64
