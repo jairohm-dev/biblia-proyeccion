@@ -240,13 +240,114 @@ function layoutOf(look) {
     : { text: { x: p, y: p, w, h: 100 - 2 * p - 14 }, ref: { x: p, y: 100 - p - 12, w, h: 12 } };
 }
 
-function loadLook() {
-  const stored = store.get(KEY.look, {}) || {};
+function migrateLook(value) {
+  const stored = { ...value };
   if ('showRef' in stored) { stored.refShow = stored.showRef; delete stored.showRef; }
   // Animaciones de la versión anterior: una sola velocidad y «Subir».
   if ('animSpeed' in stored) { stored.trSpeed ??= stored.animSpeed; stored.txSpeed ??= stored.animSpeed; delete stored.animSpeed; }
   if (stored.textAnim === 'rise') { stored.textAnim = 'slide'; stored.txDir = 'up'; }
-  return { ...DEFAULT_LOOK, ...stored };
+  return stored;
+}
+
+function loadLook() {
+  return { ...DEFAULT_LOOK, ...migrateLook(readPreference('look', {})) };
+}
+
+const PREFERENCES = {
+  look: KEY.look, theme: 'biblia.theme', studio: 'biblia.studio',
+  libraryWidth: 'easybiblia.libWidth', monitorHeight: 'biblia.monH',
+};
+const localConsole = () => ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+let sharedSettings = {};
+let pendingSettings = {};
+let settingsTimer = 0;
+let settingsBusy = false;
+let settingsAvailable = true;
+
+function readPreference(key, fallback) {
+  return Object.hasOwn(sharedSettings, key) ? sharedSettings[key] : store.get(PREFERENCES[key], fallback);
+}
+
+function cleanSettings(value) {
+  const settings = {};
+  if (!value || typeof value !== 'object') return settings;
+  if (value.look && typeof value.look === 'object') {
+    settings.look = Object.fromEntries(Object.entries(migrateLook(value.look)).filter(([key]) =>
+      Object.hasOwn(DEFAULT_LOOK, key) || key === 'layout'));
+  }
+  if (['auto', 'light', 'dark'].includes(value.theme)) settings.theme = value.theme;
+  if (typeof value.studio === 'boolean') settings.studio = value.studio;
+  for (const key of ['libraryWidth', 'monitorHeight']) {
+    if (value[key] === null || (Number.isFinite(value[key]) && value[key] > 0)) settings[key] = value[key];
+  }
+  return settings;
+}
+
+function mergeSettings(settings, patch) {
+  const merged = { ...settings, ...patch };
+  if (patch.look) merged.look = { ...settings.look, ...patch.look };
+  return merged;
+}
+
+async function readSharedSettings() {
+  const res = await signedFetch('api/settings?accion=leer', { timeout: 4500 });
+  if ([404, 405].includes(res.status)) { settingsAvailable = false; return null; }
+  const revision = /^"(0|[0-9a-f]{64})"$/.exec(res.headers.get('etag') || '')?.[1];
+  if (!res.ok || !revision) throw new Error('ajustes');
+  return { revision, settings: cleanSettings(await res.json().catch(() => ({}))) };
+}
+
+async function preloadSharedSettings() {
+  if (DESKTOP) return;
+  const snapshot = await readSharedSettings().catch(() => null);
+  if (!snapshot) return;
+  sharedSettings = snapshot.settings;
+  if (snapshot.revision === '0' && localConsole()) {
+    // El primer navegador del equipo servidor conserva los ajustes de la versión anterior.
+    pendingSettings = cleanSettings(Object.fromEntries(Object.entries(PREFERENCES).map(([key, path]) => [key, store.get(path)])));
+  }
+  for (const [key, value] of Object.entries(sharedSettings)) store.set(PREFERENCES[key], value);
+}
+
+function scheduleSettingsSave(delay = 250) {
+  if (DESKTOP || !settingsAvailable || !Object.keys(pendingSettings).length) return;
+  clearTimeout(settingsTimer);
+  if (!settingsBusy && auth.mode === 'open') settingsTimer = setTimeout(savePendingSettings, delay);
+}
+
+async function savePendingSettings() {
+  if (auth.mode !== 'open') return;
+  settingsBusy = true;
+  const patch = pendingSettings;
+  pendingSettings = {};
+  let delay = 250;
+  try {
+    const snapshot = await readSharedSettings();
+    if (!snapshot) return;
+    const { revision, settings } = snapshot;
+    const res = await signedFetch(`api/settings?accion=guardar&revision=${revision}`, {
+      body: JSON.stringify(mergeSettings(settings, patch)), headers: { 'Content-Type': 'application/json' }, timeout: 8000,
+    });
+    if (!res.ok) {
+      if (res.status === 413) { toast('La imagen de fondo es demasiado grande para compartirla.'); return; }
+      if (res.status !== 409) delay = 4000;
+      pendingSettings = mergeSettings(patch, pendingSettings);
+    }
+  } catch {
+    pendingSettings = mergeSettings(patch, pendingSettings);
+    delay = 4000;
+  } finally {
+    settingsBusy = false;
+    scheduleSettingsSave(delay);
+  }
+}
+
+function storePreference(key, value) {
+  store.set(PREFERENCES[key], value);
+  if (!DESKTOP && settingsAvailable) {
+    pendingSettings[key] = value;
+    scheduleSettingsSave();
+  }
 }
 
 /* ───────────── Escenario compartido (vista previa, en vivo y proyector) ───────────── */
@@ -656,9 +757,10 @@ async function detectServer() {
 let postBusy = false;
 let postDirty = false;
 let postFailing = false;
+let canPublishLive = DESKTOP || localConsole();
 
 function postLive() {
-  if (!serverLive || auth.mode !== 'open') return;
+  if (!serverLive || auth.mode !== 'open' || !canPublishLive) return;
   postDirty = true;
   if (postBusy) return;
   postBusy = true;
@@ -2300,6 +2402,7 @@ function resumeLive() {
 
 function setOnAir(on) {
   if (on && !state.item && !state.liveAt) return;
+  if (on) canPublishLive = true;
   const before = slideAt(state.liveAt);
   state.onAir = on;
   // Un video empieza a reproducirse al ponerlo en vivo y se pausa al apagar.
@@ -3156,8 +3259,14 @@ function setLook(patch) {
   Object.assign(state.live.look, patch);
   clearTimeout(lookSaveTimer);
   lookSaveTimer = setTimeout(() => {
-    if (!store.set(KEY.look, state.live.look) && state.live.look.bgImage) toast('La imagen es muy grande para recordarla; se usará solo en esta sesión.');
+    if (!store.set(KEY.look, state.live.look) && state.live.look.bgImage && (DESKTOP || !settingsAvailable)) {
+      toast('La imagen es muy grande para recordarla; se usará solo en esta sesión.');
+    }
   }, 250);
+  if (!DESKTOP && settingsAvailable) {
+    pendingSettings.look = { ...pendingSettings.look, ...patch };
+    scheduleSettingsSave();
+  }
   syncLookControls();
   applyRootRatio();
   update(false);
@@ -3894,7 +4003,7 @@ function applyStudio() {
 
 function setStudio(on) {
   state.studio = on;
-  store.set('biblia.studio', on);
+  storePreference('studio', on);
   // Al volver a una sola pantalla, la vista previa salta a lo que está en vivo: el público no ve ningún cambio.
   if (!on && state.onAir && state.liveAt) {
     const { item, i } = state.liveAt;
@@ -3909,7 +4018,7 @@ function setStudio(on) {
 }
 
 function initStudio() {
-  state.studio = store.get('biblia.studio', false);
+  state.studio = readPreference('studio', false);
   liveStage = createStage();
   $('#liveMonitor').prepend(liveStage);
   new ResizeObserver(() => fitStage(liveStage, state.live.look)).observe(liveStage);
@@ -3990,7 +4099,7 @@ function initResizer() {
   // Ancho de la biblioteca.
   const LIB_MIN = 260, LIB_MAX = 560;
   const setLib = (w) => root.style.setProperty('--lib-w', `${Math.round(clamp(w, LIB_MIN, LIB_MAX))}px`);
-  const savedLib = store.get('easybiblia.libWidth');
+  const savedLib = readPreference('libraryWidth');
   if (savedLib) setLib(savedLib);
 
   const resizer = document.createElement('div');
@@ -4000,22 +4109,22 @@ function initResizer() {
   dragHandle(resizer, 'is-resizing-x',
     (e) => ({ x: e.clientX, w: library.offsetWidth }),
     (ev, o) => setLib(o.w + ev.clientX - o.x),
-    () => store.set('easybiblia.libWidth', library.offsetWidth));
-  resizer.addEventListener('dblclick', () => { root.style.removeProperty('--lib-w'); store.set('easybiblia.libWidth', null); });
+    () => storePreference('libraryWidth', library.offsetWidth));
+  resizer.addEventListener('dblclick', () => { root.style.removeProperty('--lib-w'); storePreference('libraryWidth', null); });
 
   // Alto de la vista previa frente a las diapositivas.
   const MON_MIN = 240, STRIP_MIN = 160;
   const monMax = () => main.clientHeight - $('.toolbar').offsetHeight - split.offsetHeight - STRIP_MIN;
   const setMon = (h) => main.style.setProperty('--mon-h', `${Math.round(clamp(h, MON_MIN, Math.max(MON_MIN, monMax())))}px`);
-  const saveMon = () => store.set('biblia.monH', monitors.offsetHeight);
-  const savedMon = store.get('biblia.monH');
+  const saveMon = () => storePreference('monitorHeight', monitors.offsetHeight);
+  const savedMon = readPreference('monitorHeight');
   if (savedMon) setMon(savedMon);
 
   dragHandle(split, 'is-resizing-y',
     (e) => ({ y: e.clientY, h: monitors.offsetHeight }),
     (ev, o) => setMon(o.h + ev.clientY - o.y),
     saveMon);
-  split.addEventListener('dblclick', () => { main.style.removeProperty('--mon-h'); store.set('biblia.monH', null); });
+  split.addEventListener('dblclick', () => { main.style.removeProperty('--mon-h'); storePreference('monitorHeight', null); });
   split.addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
     e.preventDefault();
@@ -4037,12 +4146,12 @@ function initThemeSelector() {
     $$('[data-theme-opt]', seg).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeOpt === theme)));
     placeSegmentThumb(seg);
   };
-  select(store.get('biblia.theme', 'auto'));
+  select(readPreference('theme', 'auto'));
   seg.addEventListener('click', (e) => {
     const b = e.target.closest('[data-theme-opt]');
     if (!b) return;
     select(b.dataset.themeOpt);
-    store.set('biblia.theme', b.dataset.themeOpt);
+    storePreference('theme', b.dataset.themeOpt);
   });
 }
 
@@ -4069,6 +4178,7 @@ function startConsole() {
   auth.onUnlock = () => {
     $('#panelLanBtn').hidden = !auth.panelUrls.length;
     resyncServer();
+    scheduleSettingsSave();
   };
   auth.keepAlive = () => state.onAir;
 }

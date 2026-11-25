@@ -88,6 +88,12 @@ function derSignature(raw) {
   return Uint8Array.from([0x30, body.length, ...body]);
 }
 
+function tunnelHeaders() {
+  if (location.protocol !== 'https:' || !location.hostname.endsWith('.trycloudflare.com')) return {};
+  const access = new URLSearchParams(location.hash.slice(1)).get('acceso');
+  return /^[0-9a-f]{64}$/.test(access) ? { 'X-Biblia-Access': access } : {};
+}
+
 async function signedFetch(url, { method = 'POST', body = '', headers = {}, timeout = 0 } = {}) {
   const d = auth.device;
   if (!d) throw new Error('sin-llave');
@@ -104,7 +110,7 @@ async function signedFetch(url, { method = 'POST', body = '', headers = {}, time
   try {
     res = await fetch(u, {
       method, body: bytes, cache: 'no-store', signal: ctrl.signal,
-      headers: { ...headers, 'X-Biblia-Device': d.id, 'X-Biblia-Time': ts, 'X-Biblia-Nonce': nonce, 'X-Biblia-Signature': b64Of(derSignature(raw)) },
+      headers: { ...headers, ...tunnelHeaders(), 'X-Biblia-Device': d.id, 'X-Biblia-Time': ts, 'X-Biblia-Nonce': nonce, 'X-Biblia-Signature': b64Of(derSignature(raw)) },
     });
   } finally {
     clearTimeout(timer);
@@ -137,9 +143,10 @@ async function apiSend(url, opts) {
 async function authStatus() {
   if (DESKTOP) return tauri('auth_status').catch(() => null);
   try {
-    const res = await fetch('api/auth?accion=estado', { cache: 'no-store' });
-    if (!res.ok || !(res.headers.get('content-type') || '').includes('json')) return null;
-    return await res.json();
+    const res = await fetch('api/auth?accion=estado', { cache: 'no-store', headers: tunnelHeaders() });
+    if (!(res.headers.get('content-type') || '').includes('json')) return null;
+    const result = await res.json();
+    return res.ok || (res.status === 403 && result.error === 'enlace') ? result : null;
   } catch {
     return null;
   }
@@ -165,7 +172,10 @@ async function checkSession(keep = false) {
 }
 
 async function postAuth(action, data) {
-  const res = await fetch(`api/auth?accion=${action}`, { method: 'POST', body: JSON.stringify(data), headers: { 'Content-Type': 'application/json' }, cache: 'no-store' });
+  const res = await fetch(`api/auth?accion=${action}`, {
+    method: 'POST', body: JSON.stringify(data), cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', ...tunnelHeaders() },
+  });
   let json = {};
   try { json = await res.json(); } catch { /* sin cuerpo */ }
   return { status: res.status, ...json };
@@ -189,6 +199,7 @@ async function loginPin(pin) {
   if (DESKTOP) return tauri('auth_login', { verifier: await pinVerifier(pin, auth.salt) });
   const status = await authStatus();
   if (!status) return { status: 0 };
+  if (status.error === 'enlace') return { status: 403, error: 'enlace' };
   if (!status.configured) return { status: 409, error: 'sin-pin', registroLocal: status.registroLocal };
   auth.salt = status.salt;
   const [verifier, device] = await Promise.all([pinVerifier(pin, auth.salt), deviceKey(true)]);
@@ -261,7 +272,8 @@ const GATE_TEXT = {
   login: ['Entrar', 'Escribe el PIN de la consola para continuar.', 'Entrar'],
   change: ['Cambiar el PIN', 'Escribe el PIN de ahora y luego el nuevo. Los demás equipos tendrán que volver a entrar.', 'Guardar PIN'],
   noserver: ['Abre la app con su servidor', 'La consola está protegida con PIN y necesita su servidor. Ábrela con «serve.sh» (macOS o Linux) o con «iniciar-windows.cmd» (Windows) y entra en http://localhost:3737.', ''],
-  insecure: ['Abre el enlace de acceso al panel', 'En otro dispositivo, usa el enlace HTTPS que muestra Biblia al iniciar con acceso por IP o con ngrok.', ''],
+  insecure: ['Abre el enlace de acceso al panel', 'En otro dispositivo, usa el enlace HTTPS que muestra Biblia en el menú de inicio.', ''],
+  invite: ['Abre el enlace completo', 'Pide el enlace de acceso por internet a la persona que inició Biblia.', ''],
   'setup-local': ['Crea el PIN en la PC de Biblia', 'Completa el registro en la PC que ejecuta Biblia y vuelve a cargar esta página.', ''],
 };
 
@@ -386,6 +398,7 @@ async function submitGate() {
     return;
   }
   if (r.status === 429 || r.wait > 0) { waitMessage(r.wait || 30); return; }
+  if (r.status === 403 && r.error === 'enlace') { showGate('invite'); return; }
   if (r.status === 401) {
     setGateMessage(gateMode === 'change' ? 'El PIN actual no es correcto.' : 'PIN incorrecto.');
     $(gateMode === 'change' ? '#gateCurrent' : '#gatePin').select();
@@ -415,6 +428,7 @@ async function openConsole() {
     // En la web la entrega el servidor solo con sesión; en el ejecutable viene dentro de la app.
     const res = DESKTOP ? await fetch('console.html') : await signedFetch('api/app');
     if (!res.ok) { showGate('login'); setGateMessage('No se pudo abrir la consola. Vuelve a intentarlo.'); return; }
+    await preloadSharedSettings();
     $('#appRoot').innerHTML = await res.text();
     mounted = true;
     if (auth.name) store.set('biblia.iglesia', { name: auth.name });
@@ -549,12 +563,14 @@ function initGate() {
 // hasta saber cuál toca, así que con la sesión abierta nunca se ve el formulario de entrada.
 async function startGate() {
   initGate();
+  addEventListener('hashchange', () => { if (gateMode === 'invite') location.reload(); });
   try {
     const secure = DESKTOP || (window.isSecureContext && !!crypto.subtle);
     if (!secure && /^https?:$/.test(location.protocol)) { showGate('insecure'); return; }
     // El estado del servidor y la llave del equipo se piden a la vez: arranque más rápido.
     const [st, device] = await Promise.all([authStatus(), secure && !DESKTOP ? deviceKey(false).catch(() => null) : null]);
     if (!st) { showGate('noserver'); return; }
+    if (st.error === 'enlace') { showGate('invite'); return; }
     if (await wipeIfReinstalled(st.install)) return;
     if (!secure) { showGate('insecure'); return; }
     auth.configured = !!st.configured;

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Biblia — servidor local para macOS y Linux. No instala nada: usa el servidor Apache del sistema
-# (macOS lo trae de serie) y openssl, también del sistema. Ver ./serve.sh --ayuda
+# Biblia — servidor para macOS y Linux. Usa Apache y OpenSSL del sistema.
 #
 set -euo pipefail
 
@@ -13,9 +12,12 @@ PORT="${PORT:-3737}"
 SESSION_MIN="${BIBLIA_SESION_MIN:-720}"
 REMOTE_ORIGIN="${BIBLIA_ORIGEN_REMOTO:-}"
 REMOTE_HOST=""
+REMOTE_ACCESS=""
+TUNNEL_PID=""
 BIND="127.0.0.1"
 RED=0
 PANEL_RED=0
+INTERNET=0
 MENU=0
 CHANGE_PIN=0
 RESET_PIN=0
@@ -34,15 +36,16 @@ OPCIONES
   --menu                Muestra el menú de inicio.
   --red                 Deja que otro equipo de la red vea la salida para OBS.
   --panel-red           Habilita el panel con PIN por HTTPS en la IP de este equipo.
+  --internet            Crea un enlace HTTPS temporal con Cloudflare para entrar desde fuera.
   --restablecer-pin     Borra el PIN si lo olvidaste. Al abrir la app pedirá uno nuevo.
   --reiniciar           Deja todo como recién instalado: borra el PIN, el nombre de la
                         iglesia y la llave de visor, y la próxima vez que se abra la app
                         borra también lo guardado en el navegador (canciones, presentaciones,
                         imágenes, apariencia…). Pide confirmación.
   --no-abrir            No abre el navegador al arrancar.
-  BIBLIA_ORIGEN_REMOTO=https://tu-dominio.ngrok-free.app ./serve.sh
+  BIBLIA_ORIGEN_REMOTO=https://biblia.tu-dominio.com ./serve.sh
                         Autoriza ese dominio HTTPS por un túnel local. Requiere PIN
-                        creado previamente. Sin esta variable, no hay acceso remoto.
+                        creado previamente.
   -h, --ayuda, --help   Muestra esta ayuda.
 
 SEGURIDAD
@@ -67,6 +70,7 @@ for arg in "$@"; do
     -h|--ayuda|--help|ayuda) ayuda; exit 0 ;;
     --red) RED=1 ;;
     --panel-red) PANEL_RED=1; RED=1 ;;
+    --internet) INTERNET=1 ;;
     --menu) MENU=1 ;;
     --restablecer-pin) RESET_PIN=1 ;;
     --reiniciar|--reset|--borrar-todo) RESET_ALL=1 ;;
@@ -84,6 +88,7 @@ if [ "$MENU" = 1 ] || { [ "$#" = 0 ] && [ "$FIXED_PORT" = 0 ] && [ -t 0 ] && [ -
     echo '  3. Cambiar PIN'
     echo '  4. Restablecer PIN olvidado'
     echo '  5. Compartir proyección en la red (OBS)'
+    echo '  6. Compartir por internet (Cloudflare)'
     echo '  0. Salir'
     printf 'Elige una opción [1]: '
     IFS= read -r opcion || exit 0
@@ -93,6 +98,7 @@ if [ "$MENU" = 1 ] || { [ "$#" = 0 ] && [ "$FIXED_PORT" = 0 ] && [ -t 0 ] && [ -
       3) CHANGE_PIN=1; break ;;
       4) RESET_PIN=1; break ;;
       5) RED=1; break ;;
+      6) INTERNET=1; break ;;
       0) exit 0 ;;
       *) echo 'Elige una de las opciones del menú.' ;;
     esac
@@ -100,6 +106,7 @@ if [ "$MENU" = 1 ] || { [ "$#" = 0 ] && [ "$FIXED_PORT" = 0 ] && [ -t 0 ] && [ -
 fi
 if [ "$RED" = 1 ] && [ "$PANEL_RED" = 0 ]; then BIND="0.0.0.0"; fi
 
+if [ "$INTERNET" = 1 ]; then REMOTE_ORIGIN=""; fi
 if [ -n "$REMOTE_ORIGIN" ]; then
   if ! [[ "$REMOTE_ORIGIN" =~ ^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || [ "${#REMOTE_ORIGIN}" -gt 261 ]; then
     echo "BIBLIA_ORIGEN_REMOTO debe ser https://dominio exacto, en minúsculas, sin ruta, puerto ni comodines."
@@ -186,6 +193,10 @@ limpiar_huerfanos() {
     [ -d "$d" ] || continue
     owner="$(cat "$d/serve.pid" 2>/dev/null || true)"
     if [ -n "$owner" ] && ps -p "$owner" -o command= 2>/dev/null | grep -q 'serve\.sh'; then continue; fi
+    pid="$(cat "$d/cloudflared.pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -qF "$d/cloudflared.yml"; then
+      kill "$pid" 2>/dev/null || true
+    fi
     pid="$(cat "$d/httpd.pid" 2>/dev/null || true)"
     if [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -qF "$(basename "$d")"; then
       kill "$pid" 2>/dev/null || true
@@ -220,7 +231,16 @@ chmod 700 "$RUN"
 echo $$ > "$RUN/serve.pid"
 chmod +x "$DIR/server/"*.cgi
 
+stop_cloudflare() {
+  if [ -n "$TUNNEL_PID" ]; then
+    kill "$TUNNEL_PID" 2>/dev/null || true
+    wait "$TUNNEL_PID" 2>/dev/null || true
+    TUNNEL_PID=""
+  fi
+}
+
 stop() {
+  stop_cloudflare
   if [ -f "$RUN/httpd.pid" ]; then kill "$(cat "$RUN/httpd.pid")" 2>/dev/null || true; fi
   rm -rf "$RUN"
 }
@@ -255,14 +275,13 @@ if [ "$PANEL_RED" = 1 ]; then
   fi
 fi
 
-HOSTS="localhost|127\\.0\\.0\\.1|\\[::1\\]"
-[ -n "$LAN_IP" ] && HOSTS="$HOSTS|${LAN_IP//./\\.}"
-HOST_PATTERN="($HOSTS):${PORT}"
-[ -n "$REMOTE_HOST" ] && HOST_PATTERN="$HOST_PATTERN|${REMOTE_HOST//./\\.}"
-
 load() { [ -f "$MODS/$2" ] && echo "LoadModule $1 $MODS/$2"; return 0; }
 
-{
+write_httpd_config() {
+local hosts="localhost|127\\.0\\.0\\.1|\\[::1\\]" host_pattern
+[ -n "$LAN_IP" ] && hosts="$hosts|${LAN_IP//./\\.}"
+host_pattern="($hosts):${PORT}"
+[ -n "$REMOTE_HOST" ] && host_pattern="$host_pattern|${REMOTE_HOST//./\\.}"
 cat <<EOF
 ServerRoot "$RUN"
 DefaultRuntimeDir "$RUN"
@@ -319,10 +338,12 @@ SetEnv BIBLIA_PANEL_ORIGIN "$PANEL_ORIGIN"
 SetEnv BIBLIA_SESSION_MIN "$SESSION_MIN"
 SetEnv BIBLIA_REMOTE_ORIGIN "$REMOTE_ORIGIN"
 SetEnv BIBLIA_REMOTE_HOST "$REMOTE_HOST"
+SetEnv BIBLIA_REMOTE_ACCESS "$REMOTE_ACCESS"
 ScriptAlias /api/live "$DIR/server/live.cgi"
 ScriptAlias /api/media "$DIR/server/media.cgi"
 ScriptAlias /api/auth "$DIR/server/auth.cgi"
 ScriptAlias /api/app "$DIR/server/app.cgi"
+ScriptAlias /api/settings "$DIR/server/settings.cgi"
 SetEnv BIBLIA_APP_DIR "$DIR"
 
 <Location "/api/media">
@@ -331,6 +352,19 @@ SetEnv BIBLIA_APP_DIR "$DIR"
 <Location "/api/live">
   LimitRequestBody 16777216
 </Location>
+<Location "/api/settings">
+  LimitRequestBody 16777216
+</Location>
+<LocationMatch "^/api/(media|live)(/|\$)">
+  <If "'$REMOTE_ACCESS' != '' && %{HTTP_HOST} == '$REMOTE_HOST' && %{REQUEST_METHOD} == 'POST' && req('X-Biblia-Access') != '$REMOTE_ACCESS'">
+    Require all denied
+  </If>
+</LocationMatch>
+<LocationMatch "^/(?!(?:index\.html|styles\.css|icon\.svg|auth\.js|app\.js|studio\.js|bible_rvr1960\.json|himnarios\.json|api/(?:auth|app|live|media|settings))?\$)">
+  <If "'$REMOTE_ACCESS' != '' && %{HTTP_HOST} == '$REMOTE_HOST'">
+    Require all denied
+  </If>
+</LocationMatch>
 
 <Directory />
   Require all denied
@@ -341,7 +375,7 @@ SetEnv BIBLIA_APP_DIR "$DIR"
   AllowOverride None
   Require all granted
   # Solo se responde si se pide por el nombre de este equipo (frena el «DNS rebinding»).
-  <If "! %{HTTP_HOST} =~ m#^($HOST_PATTERN)\$#">
+  <If "! %{HTTP_HOST} =~ m#^($host_pattern)\$#">
     Require all denied
   </If>
   <If "%{HTTP_HOST} == '$REMOTE_HOST' && (%{REMOTE_ADDR} != '127.0.0.1' || req('X-Forwarded-Proto') != 'https')">
@@ -381,17 +415,31 @@ if [ "$PANEL_RED" = 1 ]; then
 </VirtualHost>
 EOF
 fi
-} > "$RUN/httpd.conf"
+}
+write_httpd_config > "$RUN/httpd.conf"
 
 "$HTTPD" -f "$RUN/httpd.conf" -DFOREGROUND &
 SERVER=$!
 # En macOS: que el equipo y la pantalla no se duerman mientras el servidor esté encendido.
 if command -v caffeinate >/dev/null; then caffeinate -di -w $$ & fi
 sleep 1
-if ! kill -0 "$SERVER" 2>/dev/null; then
+if ! kill -0 "$SERVER" 2>/dev/null || [ "$(cat "$RUN/httpd.pid" 2>/dev/null)" != "$SERVER" ]; then
   echo "El servidor no pudo arrancar:"
   cat "$RUN/error.log" 2>/dev/null || true
   exit 1
+fi
+
+if [ "$INTERNET" = 1 ]; then
+  . "$DIR/server/cloudflare.sh"
+  if start_cloudflare; then
+    # Actualiza la lista de hosts después de que Biblia haya reservado su puerto.
+    write_httpd_config > "$RUN/httpd.conf"
+    "$HTTPD" -t -f "$RUN/httpd.conf"
+    "$HTTPD" -k graceful -f "$RUN/httpd.conf"
+  else
+    stop_cloudflare
+    echo 'No se pudo crear el enlace de internet. Biblia sigue disponible en este equipo.'
+  fi
 fi
 
 URL="http://localhost:$PORT"
@@ -407,9 +455,11 @@ if [ -n "$PANEL_ORIGIN" ]; then
   echo "  Certificado público de Biblia: $CONF/Biblia-autoridad-red.cer"
   echo '  Agrega ese certificado como autoridad de confianza en los dispositivos que usarán el panel.'
 fi
-if [ -n "$REMOTE_ORIGIN" ]; then
-  echo "  Remoto    : $REMOTE_ORIGIN (requiere PIN)"
-  echo "  Túnel     : ngrok http http://127.0.0.1:$PORT --url $REMOTE_ORIGIN --inspect=false"
+if [ -n "$REMOTE_ACCESS" ]; then
+  echo "  Panel por internet: $REMOTE_ORIGIN/#acceso=$REMOTE_ACCESS"
+  echo '  Comparte el enlace completo con quienes tengan el PIN. Se cierra con Ctrl+C.'
+elif [ -n "$REMOTE_ORIGIN" ]; then
+  echo "  Panel por túnel: $REMOTE_ORIGIN (requiere PIN)"
 fi
 echo "  OBS       : $URL/?salida&obs"
 echo "  OBS (solo texto, fondo transparente):"

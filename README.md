@@ -52,7 +52,7 @@ Se instala como cualquier programa, sin terminal ni navegador: **Windows** `.exe
 
 ### Opción 2 · Versión web con servidor local
 
-Sin Node, sin Python, sin instalar nada: usa lo que ya trae el sistema.
+En modo local, Biblia usa las herramientas del sistema.
 
 ```bash
 git clone https://github.com/jairohm-dev/biblia-proyeccion.git
@@ -68,6 +68,10 @@ Se abre el navegador en `http://localhost:3737` o en el siguiente puerto disponi
 El menú también permite cambiar el PIN y habilitar el acceso al panel desde otro dispositivo.
 En **OBS → Ver en otro dispositivo** puedes copiar el enlace para ver la proyección desde la misma red.
 
+Si el otro dispositivo está fuera de la red, elige **Compartir por internet (Cloudflare)**
+en el menú. En el panel, pulsa **Acceso al panel → Copiar** y envía el enlace completo a quien
+va a entrar con el PIN. Biblia descarga Cloudflare en el primer uso si hace falta.
+
 <details>
 <summary>Más opciones del servidor</summary>
 
@@ -75,6 +79,7 @@ En **OBS → Ver en otro dispositivo** puedes copiar el enlace para ver la proye
 ./serve.sh 4000               # otro puerto
 ./serve.sh --red              # OBS en otro equipo de la red (solo puede ver)
 ./serve.sh --panel-red        # panel con PIN por HTTPS en la misma red
+./serve.sh --internet         # enlace HTTPS temporal para entrar desde internet
 ./serve.sh --restablecer-pin  # si olvidaste el PIN
 ./serve.sh --reiniciar        # todo desde cero (pide escribir BORRAR)
 ./serve.sh --ayuda            # todas las opciones
@@ -82,12 +87,12 @@ BIBLIA_SESION_MIN=30 ./serve.sh   # sesión de 30 min (por defecto, 12 horas)
 ```
 
 En Windows, `iniciar-windows.cmd -Ayuda` muestra todas las opciones, entre ellas
-`-SoloLocal`, `-RestablecerPin`, `-Reiniciar` y `-SesionMin 30`.
+`-SoloLocal`, `-Internet`, `-RestablecerPin`, `-Reiniciar` y `-SesionMin 30`.
 En macOS usa el Apache del sistema; en Linux, el de la distribución (`sudo apt install apache2`).
 </details>
 
-La versión web permite controlar el panel desde otro dispositivo con HTTPS y el PIN de Biblia.
-Consulta la [guía de acceso por IP y por ngrok](docs/ACCESO-REMOTO.md).
+Los dispositivos que entran al panel web reciben la apariencia y las preferencias guardadas en el servidor.
+Consulta la [guía de acceso por IP y por internet](docs/ACCESO-REMOTO.md).
 
 ### Uso básico
 
@@ -102,9 +107,10 @@ Consulta la [guía de acceso por IP y por ngrok](docs/ACCESO-REMOTO.md).
 
 La red de una iglesia suele ser pública, así que la consola está protegida de verdad:
 
-- **Visor de red.** `iniciar-windows.cmd` habilita la proyección de solo lectura con una llave de visor. `-SoloLocal` limita el acceso a este equipo. En macOS y Linux, `--red` habilita el visor. El control por ngrok requiere un dominio HTTPS autorizado y el PIN.
+- **Visor de red.** `iniciar-windows.cmd` habilita la proyección de solo lectura con una llave de visor. `-SoloLocal` limita el acceso a este equipo. En macOS y Linux, `--red` habilita el visor.
+- **Acceso por internet.** El túnel se abre desde Biblia hacia Cloudflare y apunta solo al servidor de la app. Para controlar se necesita el enlace completo y el PIN.
 - **La consola no existe sin PIN:** el servidor solo entrega `console.html` a un equipo que entró con el PIN. Esconder la portada desde el inspector no sirve de nada.
-- **No hay tokens que robar:** el PIN se deriva con PBKDF2-SHA256 (210 000 vueltas). Cada equipo crea una llave **ECDSA P-256 no exportable** y firma cada orden con hora y un número de un solo uso, así que una petición capturada no se puede repetir.
+- **Sesión firmada.** El PIN se deriva con PBKDF2-SHA256 (210 000 vueltas). Cada equipo crea una llave **ECDSA P-256 no exportable** y firma cada orden con hora y un número de un solo uso, así que una petición capturada no se puede repetir.
 - **Contra fuerza bruta**, el **DNS rebinding** y el **CSRF**: esperas crecientes tras fallar el PIN, comprobación del `Host` y del `Origin`, y solo se aceptan archivos multimedia.
 - **La proyección no se corta:** mientras estás en vivo, la sesión se renueva sola. Si se cierra, el proyector y OBS siguen mostrando lo último.
 

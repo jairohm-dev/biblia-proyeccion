@@ -54,7 +54,7 @@ case "$REQUEST_METHOD:$action" in
     if [ -s "$PINFILE" ]; then reply '200 OK' "{\"configured\":true,\"salt\":\"$(stored_salt)\",\"name\":\"$(church_name)\",\"install\":\"$(install_id)\"}"
     else
       registro_local=false
-      if is_panel; then registro_local=true; fi
+      if is_panel || [ "$HTTP_HOST" = "${BIBLIA_REMOTE_HOST:-}" ]; then registro_local=true; fi
       reply '200 OK' "{\"configured\":false,\"install\":\"$(install_id)\",\"registroLocal\":$registro_local}"
     fi ;;
 
@@ -103,6 +103,11 @@ case "$REQUEST_METHOD:$action" in
       lan_origin="${BIBLIA_PANEL_ORIGIN:-http://$BIBLIA_LAN_HOST:$SERVER_PORT}"
       lan_urls="[\"$lan_origin\"]"
       if [ -n "${BIBLIA_PANEL_ORIGIN:-}" ]; then panel_urls=$lan_urls; fi
+    fi
+    if [ -n "${BIBLIA_REMOTE_ACCESS:-}" ] && [ "$HTTP_HOST" != "$BIBLIA_REMOTE_HOST" ]; then
+      public_url="\"$BIBLIA_REMOTE_ORIGIN/#acceso=$BIBLIA_REMOTE_ACCESS\""
+      if [ "$panel_urls" = '[]' ]; then panel_urls="[$public_url]"
+      else panel_urls="${panel_urls%\]},$public_url]"; fi
     fi
     reply '200 OK' "{\"ok\":true,\"viewer\":\"$(cat "$CONF/viewer.key")\",\"lanUrls\":$lan_urls,\"panelUrls\":$panel_urls}" ;;
 

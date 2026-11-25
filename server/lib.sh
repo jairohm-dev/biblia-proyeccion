@@ -36,6 +36,9 @@ is_panel() {
 
 check_control() {
   is_loopback || is_panel || reply '403 Forbidden' '{"error":"solo-este-equipo"}'
+  if [ -n "${BIBLIA_REMOTE_ACCESS:-}" ] && [ "$HTTP_HOST" = "$BIBLIA_REMOTE_HOST" ]; then
+    [ "${HTTP_X_BIBLIA_ACCESS:-}" = "$BIBLIA_REMOTE_ACCESS" ] || reply '403 Forbidden' '{"error":"enlace"}'
+  fi
 }
 
 check_host() {

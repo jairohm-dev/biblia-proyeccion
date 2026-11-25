@@ -1,7 +1,7 @@
 # Controlar Biblia desde otro dispositivo
 
-El control por IP usa el servidor web (`serve.sh` o `iniciar-windows.cmd`). Desde la app de
-escritorio puedes compartir la proyección con OBS.
+El control desde otro dispositivo usa el servidor web (`serve.sh` o `iniciar-windows.cmd`).
+Desde la app de escritorio puedes compartir la proyección con OBS.
 
 ## Por IP en la misma red
 
@@ -28,45 +28,24 @@ En Windows puedes usar `iniciar-windows.cmd -PanelRed`. Usa `-Puerto`
 para elegir un puerto fijo y `-CertificadoPanel` si ya tienes un archivo PFX vigente
 que cubra las IP del equipo y cuya autoridad sea de confianza en los dispositivos.
 
-## Por ngrok
+## Desde internet con Cloudflare
 
-1. Abre el servidor de forma habitual y entra en la dirección que muestra la línea `App`.
-   Crea el PIN si todavía no existe. Después detén ese servidor con Ctrl+C antes de reiniciarlo.
-2. Copia tu dominio HTTPS desde ngrok. En estos ejemplos sustituye
-   `https://tu-dominio.ngrok-free.app` por tu URL real, sin barra final ni ruta.
-3. Inicia el servidor autorizando ese único dominio.
+1. En Mac o Linux, abre `./serve.sh` en Terminal. En Windows, abre `iniciar-windows.cmd`.
+   Elige **Compartir por internet (Cloudflare)**. Si hace falta, Biblia descarga el cliente oficial
+   en tu equipo y verifica la descarga. Funciona sin una cuenta de Cloudflare.
+2. Entra al panel que se abre en el navegador. Si es tu primera vez, crea el PIN en ese equipo.
+   Pulsa **Acceso al panel → Copiar**. También puedes copiar el enlace de la terminal.
+3. Comparte el enlace completo con las personas que van a operar Biblia. Pueden abrirlo con datos
+   móviles o en otra red y entrar con el PIN. La parte después del `#` va incluida en el enlace.
+4. Mantén abierta la ventana del servidor mientras lo uses. Para cerrar el acceso, pulsa Ctrl+C.
+   Al volver a elegir esta opción se genera otro enlace.
 
-   macOS / Linux:
+Cloudflare se conecta desde el equipo que ejecuta Biblia. Comparte el puerto de la app sin abrir
+puertos entrantes en el router. Cada enlace es temporal. Cloudflare ofrece los Quick Tunnels para
+pruebas y su disponibilidad puede variar. [Documentación de Cloudflare](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 
-   ```bash
-   BIBLIA_ORIGEN_REMOTO=https://tu-dominio.ngrok-free.app ./serve.sh
-   ```
-
-   Windows:
-
-   ```powershell
-   .\iniciar-windows.cmd -OrigenRemoto https://tu-dominio.ngrok-free.app
-   ```
-
-4. En otra terminal del mismo equipo, ejecuta el comando de la línea `Túnel`.
-   Este ejemplo usa el puerto 3737.
-
-   ```bash
-   ngrok http http://127.0.0.1:3737 --url https://tu-dominio.ngrok-free.app --inspect=false
-   ```
-
-   Conserva `Host` y `Origin` originales: no uses `--host-header` ni reglas para
-   reescribirlos. El servidor comprueba el dominio autorizado y la cabecera HTTPS
-   del túnel local. El comando usa las opciones de la [CLI de ngrok](https://ngrok.com/docs/gateway/agent/cli).
-5. Comparte la URL HTTPS. En la otra computadora se abre la misma portada y se introduce
-   el PIN existente. Cada navegador obtiene su propia llave de firma.
-6. En el equipo conectado al proyector, añade `/?salida` a la dirección de la línea `App`
-   y abre esa URL en la pantalla de proyección. Para OBS, usa la dirección de la línea `OBS`.
-   Los cambios de **Poner en vivo** de la consola remota llegan a esa salida. Mantén
-   encendidos el servidor y ngrok.
-
-No necesitas `--red` / `-Red` para ngrok. El puerto puede seguir escuchando solo en
-`127.0.0.1`. Si cambia el dominio, reinicia el servidor con la nueva URL autorizada.
+Puedes abrir este modo directamente con `./serve.sh --internet` o `iniciar-windows.cmd -Internet`.
+Si falla la conexión con Cloudflare, Biblia abre el panel local y muestra el aviso en la terminal.
 
 ## Qué se comparte
 
@@ -75,29 +54,24 @@ No necesitas `--red` / `-Red` para ngrok. El puerto puede seguir escuchando solo
 - Ver la proyección o descargar medios por el dominio remoto requiere la llave de visor
   incluida en los enlaces de OBS y del proyector generados tras entrar. Un enlace de visor
   permite ver, pero no controlar.
-- Las canciones, presentaciones y ajustes guardados en un navegador no se copian automáticamente
-  al otro. Se comparte el estado publicado **En vivo**. Usa una consola a la vez para evitar
-  que dos operadores sobrescriban lo proyectado.
+- Al entrar, cada navegador recibe la apariencia de la proyección, el tema, el modo estudio y las
+  preferencias de tamaño guardadas en el servidor. Las canciones, presentaciones y archivos de la
+  biblioteca se guardan en el navegador que los agregó.
+- El proyector y OBS reciben lo que se envía con **Poner en vivo**. Coordina quién controla la salida
+  cuando hay varias personas conectadas.
 - El audio que la aplicación reproduce en la consola sale de la computadora que la controla,
   tal como en el funcionamiento actual.
-- Esto controla Biblia, no el escritorio ni otras aplicaciones de la computadora.
+- El acceso de control se limita al panel de Biblia.
 
-Para restringir además el enlace a correos autorizados, ngrok ofrece una
-[política de OAuth](https://ngrok.com/docs/gateway/traffic-policy/examples/oauth-protection).
-Es una capa adicional y no se activa con los comandos anteriores.
+## Si ya tienes un túnel con dominio propio
 
-## Desactivar
+Crea primero el PIN desde el equipo que ejecuta Biblia. Arranca con
+`BIBLIA_ORIGEN_REMOTO=https://biblia.tu-dominio.com ./serve.sh` en Mac o Linux, o con
+`iniciar-windows.cmd -OrigenRemoto https://biblia.tu-dominio.com` en Windows. Configura tu túnel
+para conectarse a `127.0.0.1` en el puerto que muestra la línea `App` y conservar el `Host` y el
+`Origin` del navegador junto con la cabecera `X-Forwarded-Proto: https`.
 
-Detén ngrok con Ctrl+C. Para volver al modo exclusivamente local, detén el servidor y
-arráncalo sin `BIBLIA_ORIGEN_REMOTO` / `-OrigenRemoto`. Si habías exportado la variable,
-elimínala también del entorno. No se borra el PIN ni tus datos.
-
-## Comprobaciones
-
-`You don't have permission to access this resource.` indica que Apache rechazó la petición.
-Comprueba que la URL configurada coincida exactamente con la URL HTTPS de ngrok y que
-hayas reiniciado el servidor después de configurarla. Verifica que el túnel apunte al
-puerto que muestra el servidor web en la línea `App`.
+## Pruebas de integración
 
 Pruebas de integración para desarrolladores en macOS/Linux (requieren Node solo para ejecutarlas):
 

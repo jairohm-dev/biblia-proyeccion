@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  Biblia - servidor local para Windows. No instala nada: usa PowerShell y .NET, que ya vienen en Windows 10 y 11.
+  Biblia - servidor para Windows. Usa PowerShell y .NET, incluidos en Windows 10 y 11.
 
 .DESCRIPTION
   Haz doble clic en «iniciar-windows.cmd» para abrir el menú de Biblia.
@@ -23,6 +23,8 @@
   Habilita el visor en la red local. Es el valor por defecto de iniciar-windows.cmd.
 .PARAMETER SoloLocal
   Limita el acceso al equipo que ejecuta el servidor.
+.PARAMETER Internet
+  Crea un enlace HTTPS temporal con Cloudflare para acceder al panel desde fuera de la red.
 .PARAMETER RestablecerPin
   Borra el PIN si lo olvidaste. Al abrir la app pedirá uno nuevo.
 .PARAMETER Reiniciar
@@ -56,7 +58,8 @@ param(
   [switch]$Menu,
   [switch]$PanelRed,
   [int]$PuertoPanel,
-  [string]$CertificadoPanel
+  [string]$CertificadoPanel,
+  [switch]$Internet
 )
 
 Set-StrictMode -Version 2
@@ -74,6 +77,7 @@ OPCIONES
                     o en el siguiente puerto disponible.
   -Menu             Abre el menú de inicio.
   -PanelRed         Habilita el panel con PIN por HTTPS en las IP de este equipo.
+  -Internet         Crea un enlace HTTPS temporal con Cloudflare para entrar desde fuera.
   -CertificadoPanel Ruta de un certificado PFX para las IP del panel.
                     Introduce su contraseña cuando el programa la solicite.
   -Puerto 4000      Usa un puerto fijo para la app, el panel HTTPS y el visor.
@@ -81,7 +85,7 @@ OPCIONES
                     (por defecto 720 = 12 horas).
   -Red              Habilita el visor en la red local al ejecutar serve.ps1 directamente.
   -SoloLocal        Limita el acceso al equipo que ejecuta el servidor.
-  -OrigenRemoto https://tu-dominio.ngrok-free.app
+  -OrigenRemoto https://biblia.tu-dominio.com
                     Autoriza ese dominio HTTPS por un túnel local; requiere PIN previo.
   -RestablecerPin   Borra el PIN si lo olvidaste. Al abrir la app pedirá uno nuevo.
   -Reiniciar        Deja todo como recién instalado: borra el PIN, el nombre de la
@@ -117,15 +121,17 @@ if ($Menu -or ($PSBoundParameters.Count -eq 0 -and -not [Console]::IsInputRedire
     Write-Host '  2. Iniciar con acceso al panel por IP (HTTPS)'
     Write-Host '  3. Cambiar PIN'
     Write-Host '  4. Restablecer PIN olvidado'
+    Write-Host '  5. Compartir por internet (Cloudflare)'
     Write-Host '  0. Salir'
     $opcion = Read-Host 'Elige una opción [1]'
     if ($null -eq $opcion -or $opcion -eq '0') { exit 0 }
-    if ($opcion -in '', '1', '2', '3', '4') { break }
+    if ($opcion -in '', '1', '2', '3', '4', '5') { break }
     Write-Host 'Elige una de las opciones del menú.'
   }
   if ($opcion -eq '2') { $PanelRed = $true }
   if ($opcion -eq '3') { $changePinOnStart = $true }
   if ($opcion -eq '4') { $RestablecerPin = $true }
+  if ($opcion -eq '5') { $Internet = $true }
 }
 if ($PanelRed -and $SoloLocal) {
   Write-Host 'Elige -PanelRed para compartir el panel o -SoloLocal para usar solo esta PC.'
@@ -133,6 +139,7 @@ if ($PanelRed -and $SoloLocal) {
 }
 if ($PanelRed) { $Red = $true }
 if ($SoloLocal) { $Red = $false }
+if ($Internet -and -not $PanelRed -and -not $PSBoundParameters.ContainsKey('Red')) { $Red = $false }
 # Compatibilidad con los comandos anteriores que fijaban solo el puerto del panel.
 $fixedPort = $PSBoundParameters.ContainsKey('Puerto')
 if ($PanelRed -and -not $fixedPort -and $PSBoundParameters.ContainsKey('PuertoPanel')) {
@@ -145,6 +152,9 @@ if ($Puerto -lt 1024 -or $Puerto -gt 65535) {
 }
 
 $RemoteHost = ''
+$RemoteAccess = ''
+$PublicPanelUrl = ''
+if ($Internet) { $OrigenRemoto = '' }
 if ($OrigenRemoto) {
   if ($OrigenRemoto.Length -gt 261 -or $OrigenRemoto -cnotmatch '^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$') {
     Write-Host 'OrigenRemoto debe ser https://dominio exacto, en minúsculas, sin ruta, puerto ni comodines.'; exit 1
@@ -427,7 +437,7 @@ function Invoke-Auth($c) {
   if ($c.Method -eq 'GET' -and $action -eq 'estado') {
     if ($pin) { Send-Json $c 200 'OK' ('{"configured":true,"salt":"' + $pin.Salt + '","name":"' + (Get-ChurchName) + '","install":"' + $Install + '"}') }
     else {
-      $status = @{ configured = $false; install = $Install; registroLocal = $c.Panel }
+      $status = @{ configured = $false; install = $Install; registroLocal = ($c.Panel -or (Test-Remote $c)) }
       Send-Json $c 200 'OK' (ConvertTo-Json -Compress -InputObject $status)
     }
     return
@@ -478,6 +488,7 @@ function Invoke-Auth($c) {
       if (-not (Test-Remote $c)) {
         $session.lanUrls = $LanUrls
         $session.panelUrls = $PanelUrls
+        if ($PublicPanelUrl) { $session.panelUrls += $PublicPanelUrl }
       }
       Send-Json $c 200 'OK' (ConvertTo-Json -Compress -InputObject $session)
     }
@@ -591,18 +602,86 @@ function Invoke-Static($c) {
   Send-File $c $full $Mime[$ext] 'no-cache' $null
 }
 
-function Invoke-Request($c) {
+function Read-Settings {
+  $path = Join-Path $Conf 'ajustes.json'
+  if (Test-Path -LiteralPath $path) {
+    $body = [IO.File]::ReadAllBytes($path)
+    return @{ Body = $body; Revision = (Get-Sha256Hex $body) }
+  }
+  return @{ Body = [Text.Encoding]::UTF8.GetBytes('{}'); Revision = '0' }
+}
+
+function Invoke-Settings($c) {
+  if (-not (Test-ConsoleAccess $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
+  if ($c.Method -ne 'POST') { Send-Json $c 405 'Method Not Allowed' '{"error":"metodo"}'; return }
+  if (-not (Test-Origin $c)) { Send-Json $c 403 'Forbidden' '{"error":"origen"}'; return }
+  $why = Test-Signature $c
+  if ($why) { Send-Json $c 401 'Unauthorized' ('{"error":"' + $why + '"}'); return }
+
+  switch (Get-Query $c 'accion') {
+    'leer' {
+      $snapshot = Read-Settings
+      Send-Bytes $c 200 'OK' @{ 'Content-Type' = 'application/json'; 'Cache-Control' = 'no-store';
+        'ETag' = ('"' + $snapshot.Revision + '"') } $snapshot.Body
+    }
+    'guardar' {
+      $revision = Get-Query $c 'revision'
+      if ($revision -cnotmatch '^(0|[0-9a-f]{64})$') { Send-Json $c 400 'Bad Request' '{"error":"revision"}'; return }
+      try { $settings = ConvertFrom-Json -InputObject $c.BodyText }
+      catch { Send-Json $c 400 'Bad Request' '{"error":"ajustes"}'; return }
+      if ($settings -isnot [pscustomobject]) { Send-Json $c 400 'Bad Request' '{"error":"ajustes"}'; return }
+
+      try {
+        $lock = [IO.File]::Open((Join-Path $Conf 'ajustes.lock'), [IO.FileMode]::OpenOrCreate,
+          [IO.FileAccess]::Write, [IO.FileShare]::None)
+      } catch [IO.IOException] {
+        Send-Json $c 503 'Service Unavailable' '{"error":"ajustes"}'
+        return
+      }
+      try {
+        if ((Read-Settings).Revision -cne $revision) { Send-Json $c 409 'Conflict' '{"error":"revision"}'; return }
+        $path = Join-Path $Conf 'ajustes.json'
+        $pending = "$path.tmp"
+        [IO.File]::WriteAllBytes($pending, $c.BodyMem.ToArray())
+        if ([IO.File]::Exists($path)) { [IO.File]::Replace($pending, $path, [NullString]::Value) }
+        else { [IO.File]::Move($pending, $path) }
+      } finally {
+        $lock.Dispose()
+      }
+      Send-Json $c 200 'OK' ('{"revision":"' + $c.BodyHash + '"}')
+    }
+    default { Send-Json $c 404 'Not Found' '{"error":"accion"}' }
+  }
+}
+
+function Test-RequestHost($c) {
   # Contra el «DNS rebinding»: solo se responde si se pide por el nombre de este equipo.
   $hostsForConnection = if ($c.Panel) { $PanelHosts } else { $AllowedHosts }
-  if ($hostsForConnection -notcontains $c.Headers['host']) { Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return }
+  if ($hostsForConnection -notcontains $c.Headers['host']) { Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return $false }
   if (Test-Remote $c) {
-    if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"tunel-local"}'; return }
-    if ($c.Headers['x-forwarded-proto'] -cne 'https') { Send-Json $c 403 'Forbidden' '{"error":"https"}'; return }
+    if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"tunel-local"}'; return $false }
+    if ($c.Headers['x-forwarded-proto'] -cne 'https') { Send-Json $c 403 'Forbidden' '{"error":"https"}'; return $false }
+    $control = $c.Path -in '/api/auth', '/api/app', '/api/settings' -or
+      ($c.Method -eq 'POST' -and $c.Path -in '/api/live', '/api/media')
+    if ($RemoteAccess -and $c.Path -notin '/', '/index.html', '/styles.css', '/icon.svg', '/auth.js',
+        '/app.js', '/studio.js', '/bible_rvr1960.json', '/himnarios.json', '/api/auth', '/api/app',
+        '/api/live', '/api/media', '/api/settings') {
+      Send-Json $c 404 'Not Found' '{"error":"no-existe"}'
+      return $false
+    }
+    if ($RemoteAccess -and $control -and $c.Headers['x-biblia-access'] -cne $RemoteAccess) {
+      Send-Json $c 403 'Forbidden' '{"error":"enlace"}'
+      return $false
+    }
   } elseif ($c.Headers['x-forwarded-for'] -or $c.Headers['x-forwarded-host'] -or $c.Headers['x-forwarded-proto'] -or $c.Headers['forwarded']) {
-    Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return
+    Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return $false
   }
   # El modo local solo acepta conexiones de loopback.
-  if (-not $Red -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
+  if (-not $Red -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return $false }
+  return $true
+}
+
+function Invoke-Request($c) {
   if ($PanelRed -and -not $c.Panel -and $c.Method -eq 'GET' -and $c.Path -eq '/' -and -not $c.Query -and
       $LanUrls -contains "http://$($c.Headers['host'])") {
     Send-Bytes $c 302 'Found' @{ Location = "https://$($c.Headers['host'])/"; 'Cache-Control' = 'no-store' } (New-Object byte[] 0)
@@ -613,6 +692,7 @@ function Invoke-Request($c) {
     '/api/live' { Invoke-Live $c }
     '/api/media' { Invoke-Media $c }
     '/api/app' { Invoke-App $c }
+    '/api/settings' { Invoke-Settings $c }
     default { Invoke-Static $c }
   }
 }
@@ -631,6 +711,7 @@ function Start-Request($c, [byte[]]$data, [int]$headEnd) {
     $i = $line.IndexOf(':')
     if ($i -gt 0) { $c.Headers[$line.Substring(0, $i).Trim().ToLowerInvariant()] = $line.Substring($i + 1).Trim() }
   }
+  if (-not (Test-RequestHost $c)) { return }
   $len = 0
   if ($c.Headers.ContainsKey('content-length')) {
     if ($c.Headers['content-length'] -notmatch '^[0-9]{1,10}$') { Send-Json $c 400 'Bad Request' '{"error":"longitud"}'; return }
@@ -639,7 +720,7 @@ function Start-Request($c, [byte[]]$data, [int]$headEnd) {
   if ($c.Headers.ContainsKey('transfer-encoding')) { Send-Json $c 411 'Length Required' '{"error":"longitud"}'; return }
   $limit = 1048576
   if ($c.Path -eq '/api/media') { $limit = 1073741824 }
-  if ($c.Path -eq '/api/live') { $limit = 16777216 }   # lleva la imagen de fondo en base64
+  if ($c.Path -in '/api/live', '/api/settings') { $limit = 16777216 }   # lleva la imagen de fondo en base64
   if ($len -gt $limit) { Send-Json $c 413 'Payload Too Large' '{"error":"grande"}'; return }
   $c.Remaining = $len
   $c.Hasher = [Security.Cryptography.SHA256]::Create()
@@ -789,6 +870,7 @@ $listeners = @()
 $PanelHosts = @()
 $PanelUrls = @()
 $panelCertificate = $null
+$CloudflareProcess = $null
 $conns = New-Object Collections.ArrayList
 try {
   if ($PanelRed -and -not $LanIps.Count) {
@@ -811,6 +893,21 @@ try {
     . (Join-Path $Root 'server/panel-cert.ps1')
     $panelCertificate = Get-PanelCertificate $LanIps $Conf $CertificadoPanel
   }
+  New-Item -ItemType Directory -Force -Path $Run | Out-Null
+  if ($Internet) {
+    . (Join-Path $Root 'server/cloudflare.ps1')
+    try {
+      $OrigenRemoto = Start-CloudflareTunnel
+      $RemoteAccess = New-RandomHex 32
+      $RemoteHost = $OrigenRemoto.Substring(8)
+      $AllowedHosts += $RemoteHost
+      $PublicPanelUrl = "$OrigenRemoto/#acceso=$RemoteAccess"
+    } catch {
+      Stop-CloudflareTunnel
+      Write-Host $_.Exception.Message
+      Write-Host 'No se pudo crear el enlace de internet. Biblia sigue disponible en este equipo.'
+    }
+  }
 
   if ($Puerto -ne $requestedPort) { Write-Host "El puerto $requestedPort está ocupado o reservado. Biblia usará el $Puerto." }
   Write-Host '=============================================='
@@ -826,9 +923,11 @@ try {
       Write-Host '  Instala ese certificado como autoridad de confianza en los dispositivos que usarán el panel.'
     }
   }
-  if ($OrigenRemoto) {
-    Write-Host "  Remoto    : $OrigenRemoto (requiere PIN)"
-    Write-Host "  Túnel     : ngrok http http://127.0.0.1:$Puerto --url $OrigenRemoto --inspect=false"
+  if ($PublicPanelUrl) {
+    Write-Host "  Panel por internet: $PublicPanelUrl"
+    Write-Host '  Comparte el enlace completo con quienes tengan el PIN. Se cierra con Ctrl+C.'
+  } elseif ($OrigenRemoto) {
+    Write-Host "  Panel por túnel: $OrigenRemoto (requiere PIN)"
   }
   Write-Host "  OBS       : $Url/?salida&obs"
   Write-Host '  OBS (solo texto, fondo transparente):'
@@ -841,7 +940,6 @@ try {
   Write-Host '  Ayuda     : iniciar-windows.cmd -Ayuda'
   Write-Host '  Detener   : Ctrl+C o cierra esta ventana'
   Write-Host '=============================================='
-  New-Item -ItemType Directory -Force -Path $Run | Out-Null
   if (-not $NoAbrir) { Start-Process $openUrl }
   while ($true) {
     $busy = $false
@@ -869,6 +967,7 @@ try {
     if (-not $busy) { Start-Sleep -Milliseconds 15 }
   }
 } finally {
+  if ($CloudflareProcess) { Stop-CloudflareTunnel }
   foreach ($c in @($conns)) { Close-Conn $c }
   foreach ($l in $listeners) { try { $l.Stop() } catch {} }
   if ($panelCertificate) { $panelCertificate.Cert.Dispose() }
