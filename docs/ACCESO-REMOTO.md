@@ -1,9 +1,29 @@
-# Controlar Biblia desde otra computadora con ngrok
+# Controlar Biblia desde otro dispositivo
 
 Este modo corresponde al servidor web (`serve.sh` o `serve.ps1`). La app de escritorio
 mantiene su funcionamiento actual; su servidor para OBS solo permite ver.
 
-## Preparar y compartir
+## Por IP en la misma red (Windows)
+
+1. Abre `iniciar-windows.cmd` y elige **Iniciar con acceso al panel por IP (HTTPS)**.
+   La PC que ejecuta Biblia y el otro dispositivo deben estar en la misma red.
+2. Si es la primera vez que usas Biblia, crea el PIN en el navegador de la PC que ejecuta el servidor.
+3. Copia `Biblia-autoridad-red.cer` desde la ruta que muestra la terminal y agrégalo como
+   autoridad raíz de confianza en cada dispositivo que vaya a controlar el panel. Transfiere el
+   certificado público directamente desde la PC de Biblia. En iPhone o iPad, habilita también
+   la confianza SSL/TLS para el certificado. [Guía de Apple](https://support.apple.com/en-ie/102390)
+4. En Biblia, pulsa **Acceso al panel → Copiar**. Abre ese enlace en el otro dispositivo
+   e introduce el PIN. La terminal también muestra el enlace, por ejemplo `https://192.168.1.25:3743`.
+
+El enlace de OBS se copia desde **OBS**. El panel usa su propio puerto HTTPS y publica los cambios
+en la misma proyección. Si abres la IP con el puerto web, Biblia te lleva al enlace HTTPS.
+Reinicia Biblia con la misma opción para volver a habilitar el panel por IP.
+
+También puedes iniciar directamente con `iniciar-windows.cmd -PanelRed`. Usa `-PuertoPanel`
+para elegir un puerto HTTPS fijo y `-CertificadoPanel` si ya tienes un archivo PFX vigente
+que cubra las IP del equipo y cuya autoridad sea de confianza en los dispositivos.
+
+## Por ngrok
 
 1. Abre el servidor de forma habitual y entra en la dirección que muestra la línea `App`.
    Crea el PIN si todavía no existe. Después detén ese servidor con Ctrl+C antes de reiniciarlo.

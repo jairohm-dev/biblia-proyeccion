@@ -3472,17 +3472,15 @@ async function setObsDesktop(on, lan) {
   refreshObsDesktop();
 }
 
-function renderObsLanLinks() {
-  const urls = auth.viewer ? auth.lanUrls : [];
-  $('#obsLanLinks').innerHTML = urls.map((base, index) => {
-    const id = `obsLanLink${index}`;
-    const link = `${base}/?salida&obs&k=${auth.viewer}`;
+function renderCopyLinks(container, prefix, urls, label) {
+  $(container).innerHTML = urls.map((link, index) => {
+    const id = `${prefix}${index}`;
+    const host = new URL(link).host;
     return `<div class="copy-row">
-      <input id="${id}" readonly aria-label="Enlace de red ${esc(base)}" value="${esc(link)}">
+      <input id="${id}" readonly aria-label="${esc(`${label} ${host}`)}" value="${esc(link)}">
       <button class="btn accent" type="button" data-copy="${id}">Copiar</button>
     </div>`;
   }).join('');
-  $('#obsLanShare').hidden = !urls.length;
 }
 
 function openObs() {
@@ -3497,7 +3495,11 @@ function openObs() {
   $('#obsOverlay').value = `${base}?salida&obs&transparente${k}`;
   $('#obsDesktop').hidden = !DESKTOP;
   if (DESKTOP) refreshObsDesktop();
-  else renderObsLanLinks();
+  else {
+    const links = auth.viewer ? auth.lanUrls.map((base) => `${base}/?salida&obs&k=${auth.viewer}`) : [];
+    renderCopyLinks('#obsLanLinks', 'obsLanLink', links, 'Enlace de proyección');
+    $('#obsLanShare').hidden = !links.length;
+  }
   $('#obsDialog').showModal();
 }
 
@@ -3628,10 +3630,16 @@ function bindEvents() {
 
   $('#obsBtn').addEventListener('click', openObs);
   $('#obsChip').addEventListener('click', openObs);
-  $('#obsDialog').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-copy]');
-    if (b) copyField(b.dataset.copy);
+  $('#panelLanBtn').addEventListener('click', () => {
+    renderCopyLinks('#panelLanLinks', 'panelLanLink', auth.panelUrls, 'Enlace de acceso al panel');
+    $('#panelLanDialog').showModal();
   });
+  for (const id of ['#obsDialog', '#panelLanDialog']) {
+    $(id).addEventListener('click', (e) => {
+      const b = e.target.closest('[data-copy]');
+      if (b) copyField(b.dataset.copy);
+    });
+  }
 
   $('#stripActions').addEventListener('change', async (e) => {
     const sel = e.target.closest('[data-strip-folder]');
@@ -4058,7 +4066,10 @@ function startConsole() {
   initStudio();
   // Al volver a entrar, OBS y el proyector se ponen al día al instante: lo que está en vivo y sus
   // imágenes o videos (si el servidor se reinició, los perdió). Mientras tanto nunca se apagaron.
-  auth.onUnlock = resyncServer;
+  auth.onUnlock = () => {
+    $('#panelLanBtn').hidden = !auth.panelUrls.length;
+    resyncServer();
+  };
   auth.keepAlive = () => state.onAir;
 }
 

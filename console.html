@@ -81,6 +81,7 @@
           </div>
           <button class="btn accent" id="openOutput" type="button" title="Abrir el proyector"><i data-icon="display"></i><span>Abrir proyector</span></button>
           <button class="btn" id="obsBtn" type="button" title="Mostrar en OBS"><i data-icon="link"></i>OBS</button>
+          <button class="btn" id="panelLanBtn" type="button" hidden><i data-icon="globe"></i>Acceso al panel</button>
           <button class="btn" id="toggleInspector" type="button" title="Apariencia" aria-pressed="false" aria-expanded="false" aria-controls="inspector"><i data-icon="palette"></i>Apariencia</button>
         </div>
       </header>
@@ -571,7 +572,21 @@
           <div class="obs-sub">Para ponerlo encima de la cámara o de un video.</div>
           <div class="copy-row"><input id="obsOverlay" readonly aria-label="Enlace con fondo transparente"><button class="btn accent" type="button" data-copy="obsOverlay">Copiar</button></div>
         </div>
-        <p class="obs-warn" id="obsWarn" hidden>Este servidor no permite conectar OBS. Cierra el servidor actual y abre la app con <code>./serve.sh</code>.</p>
+        <p class="obs-warn" id="obsWarn" hidden>Comprueba que el servidor de Biblia siga ejecutándose para conectar OBS.</p>
+      </form>
+    </dialog>
+
+    <dialog class="sheet" id="panelLanDialog" aria-labelledby="panelLanTitle">
+      <form method="dialog">
+        <header class="sheet-head">
+          <span></span>
+          <h2 id="panelLanTitle">Acceso al panel</h2>
+          <button class="link-btn strong" type="submit" value="close">Listo</button>
+        </header>
+        <div class="obs-link">
+          <div class="obs-sub">Abre el enlace desde un dispositivo de la misma red y entra con el PIN de Biblia.</div>
+          <div id="panelLanLinks"></div>
+        </div>
       </form>
     </dialog>
 

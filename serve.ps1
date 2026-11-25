@@ -3,8 +3,8 @@
   Biblia - servidor local para Windows. No instala nada: usa PowerShell y .NET, que ya vienen en Windows 10 y 11.
 
 .DESCRIPTION
-  Haz doble clic en «iniciar-windows.cmd» para abrir la app en el navegador.
-  Usa http://localhost:3737 o el siguiente puerto disponible y habilita el visor en la red local.
+  Haz doble clic en «iniciar-windows.cmd» para abrir el menú de Biblia.
+  Al iniciar con el menú, Biblia abre http://localhost:3737 o el siguiente puerto disponible.
 
   SEGURIDAD
   - La llave del enlace da acceso de solo lectura a la proyección en la red local.
@@ -52,7 +52,11 @@ param(
   [Alias('Reset', 'BorrarTodo')][switch]$Reiniciar,
   [switch]$NoAbrir,
   [Alias('h', 'help')][switch]$Ayuda,
-  [switch]$SoloLocal
+  [switch]$SoloLocal,
+  [switch]$Menu,
+  [switch]$PanelRed,
+  [int]$PuertoPanel = 3743,
+  [string]$CertificadoPanel
 )
 
 Set-StrictMode -Version 2
@@ -66,8 +70,13 @@ USO
   iniciar-windows.cmd [opciones]      (o: powershell -File serve.ps1 [opciones])
 
 OPCIONES
-  (sin nada)        Abre la app en http://localhost:3737 o el siguiente puerto disponible.
-                    iniciar-windows.cmd habilita el visor en la red local.
+  (sin nada)        Muestra el menú y ofrece iniciar Biblia en http://localhost:3737
+                    o en el siguiente puerto disponible.
+  -Menu             Abre el menú de inicio.
+  -PanelRed         Habilita el panel con PIN por HTTPS en las IP de este equipo.
+  -PuertoPanel 3743 Puerto HTTPS para el panel en red.
+  -CertificadoPanel Ruta de un certificado PFX para las IP del panel.
+                    Introduce su contraseña cuando el programa la solicite.
   -Puerto 4000      Usa un puerto fijo (entre 1024 y 65535).
   -SesionMin 30     Minutos sin usar la consola antes de volver a pedir el PIN
                     (por defecto 720 = 12 horas).
@@ -102,7 +111,35 @@ DETENER
 if ($Ayuda) { Show-Ayuda; exit 0 }
 if ($Puerto -lt 1024 -or $Puerto -gt 65535) { Write-Host "Puerto inválido: $Puerto (usa uno entre 1024 y 65535)"; exit 1 }
 
+$changePinOnStart = $false
+if ($Menu -or ($PSBoundParameters.Count -eq 0 -and -not [Console]::IsInputRedirected -and -not $OrigenRemoto)) {
+  while ($true) {
+    Write-Host ''
+    Write-Host 'Biblia'
+    Write-Host '  1. Iniciar Biblia'
+    Write-Host '  2. Iniciar con acceso al panel por IP (HTTPS)'
+    Write-Host '  3. Cambiar PIN'
+    Write-Host '  4. Restablecer PIN olvidado'
+    Write-Host '  0. Salir'
+    $opcion = Read-Host 'Elige una opción [1]'
+    if ($null -eq $opcion -or $opcion -eq '0') { exit 0 }
+    if ($opcion -in '', '1', '2', '3', '4') { break }
+    Write-Host 'Elige una de las opciones del menú.'
+  }
+  if ($opcion -eq '2') { $PanelRed = $true }
+  if ($opcion -eq '3') { $changePinOnStart = $true }
+  if ($opcion -eq '4') { $RestablecerPin = $true }
+}
+if ($PanelRed -and $SoloLocal) {
+  Write-Host 'Elige -PanelRed para compartir el panel o -SoloLocal para usar solo esta PC.'
+  exit 1
+}
+if ($PanelRed) { $Red = $true }
 if ($SoloLocal) { $Red = $false }
+if ($PanelRed -and ($PuertoPanel -lt 1024 -or $PuertoPanel -gt 65535)) {
+  Write-Host "Puerto HTTPS inválido: $PuertoPanel (usa uno entre 1024 y 65535)"
+  exit 1
+}
 
 $RemoteHost = ''
 if ($OrigenRemoto) {
@@ -112,7 +149,8 @@ if ($OrigenRemoto) {
   $RemoteHost = $OrigenRemoto.Substring(8)
 }
 
-$Root = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
+$Separator = [IO.Path]::DirectorySeparatorChar
+$Root = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd($Separator)
 $Conf = Join-Path $env:APPDATA 'Biblia'
 if ($env:BIBLIA_CONF_DIR) { $Conf = $env:BIBLIA_CONF_DIR }
 New-Item -ItemType Directory -Force -Path $Conf | Out-Null
@@ -266,7 +304,7 @@ $MaxConns = 64
 function Close-Conn($c) {
   if ($c.Phase -eq 'closed') { return }
   $c.Phase = 'closed'
-  foreach ($d in @($c.File, $c.BodyFile, $c.Stream, $c.Client)) { if ($d) { try { $d.Dispose() } catch {} } }
+  foreach ($d in @($c.File, $c.BodyFile, $c.BodyMem, $c.Head, $c.Hasher, $c.Stream, $c.Client)) { if ($d) { try { $d.Dispose() } catch {} } }
   if ($c.BodyPath -and (Test-Path $c.BodyPath)) { Remove-Item -Force $c.BodyPath -ErrorAction SilentlyContinue }
 }
 
@@ -315,15 +353,17 @@ function Get-JsonField($c, [string]$name) {
 }
 
 function Test-Loopback($c) { return [Net.IPAddress]::IsLoopback($c.Client.Client.RemoteEndPoint.Address) }
-function Test-Remote($c) { return $RemoteHost -and $c.Headers['host'] -eq $RemoteHost }
+function Test-ConsoleAccess($c) { return $c.Panel -or (Test-Loopback $c) }
+function Test-Remote($c) { return -not $c.Panel -and $RemoteHost -and $c.Headers['host'] -eq $RemoteHost }
 function Test-Origin($c) {
+  if ($c.Panel) { return $c.Headers['origin'] -ceq "https://$($c.Headers['host'])" }
   if (Test-Remote $c) { return $c.Headers['origin'] -ceq $OrigenRemoto }
   return $AllowedOrigins -contains $c.Headers['origin']
 }
 
 function Get-WaitLeft {
-  $left = [int][Math]::Ceiling(($script:FailUntil - [DateTime]::UtcNow).TotalSeconds)
-  if ($left -gt 0) { return $left }
+  $left = ($script:FailUntil - [DateTime]::UtcNow).TotalSeconds
+  if ($left -gt 0) { return [int][Math]::Ceiling($left) }
   return 0
 }
 function Add-Failure {
@@ -378,19 +418,22 @@ function Test-Signature($c) {
 }
 
 function Invoke-Auth($c) {
-  if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
+  if (-not (Test-ConsoleAccess $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
   $action = Get-Query $c 'accion'
   $pin = Get-StoredPin
   if ($c.Method -eq 'GET' -and $action -eq 'estado') {
     if ($pin) { Send-Json $c 200 'OK' ('{"configured":true,"salt":"' + $pin.Salt + '","name":"' + (Get-ChurchName) + '","install":"' + $Install + '"}') }
-    else { Send-Json $c 200 'OK' ('{"configured":false,"install":"' + $Install + '"}') }
+    else {
+      $status = @{ configured = $false; install = $Install; registroLocal = $c.Panel }
+      Send-Json $c 200 'OK' (ConvertTo-Json -Compress -InputObject $status)
+    }
     return
   }
   if ($c.Method -ne 'POST') { Send-Json $c 404 'Not Found' '{"error":"accion"}'; return }
   if (-not (Test-Origin $c)) { Send-Json $c 403 'Forbidden' '{"error":"origen"}'; return }
   switch ($action) {
     'crear' {
-      if (Test-Remote $c) { Send-Json $c 403 'Forbidden' '{"error":"registro-local"}'; return }
+      if ($c.Panel -or (Test-Remote $c)) { Send-Json $c 403 'Forbidden' '{"error":"registro-local"}'; return }
       $salt = Get-JsonField $c 'salt'; $ver = Get-JsonField $c 'verifier'; $pub = Get-JsonField $c 'pub'; $name = Get-JsonField $c 'name'
       if ($salt -notmatch '^[0-9a-f]{32}$' -or $ver -notmatch '^[0-9a-f]{64}$') { Send-Json $c 400 'Bad Request' '{"error":"datos"}'; return }
       if ($name -and $name -cnotmatch '^[A-Za-z0-9_-]{1,160}$') { Send-Json $c 400 'Bad Request' '{"error":"nombre"}'; return }
@@ -428,8 +471,11 @@ function Invoke-Auth($c) {
     { $_ -in 'comprobar', 'mantener' } {
       $why = Test-Signature $c
       if ($why) { Send-Json $c 401 'Unauthorized' ('{"error":"' + $why + '"}'); return }
-      $session = @{ ok = $true; viewer = $Viewer; lanUrls = @() }
-      if (-not (Test-Remote $c)) { $session.lanUrls = $LanUrls }
+      $session = @{ ok = $true; viewer = $Viewer; lanUrls = @(); panelUrls = @() }
+      if (-not (Test-Remote $c)) {
+        $session.lanUrls = $LanUrls
+        $session.panelUrls = $PanelUrls
+      }
       Send-Json $c 200 'OK' (ConvertTo-Json -Compress -InputObject $session)
     }
     'salir' {
@@ -471,7 +517,7 @@ function Send-Live($c) {
 
 function Invoke-Live($c) {
   if ($c.Method -eq 'POST') {
-    if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
+    if (-not (Test-ConsoleAccess $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
     if (-not (Test-Origin $c)) { Send-Json $c 403 'Forbidden' '{"error":"origen"}'; return }
     $why = Test-Signature $c
     if ($why) { Send-Json $c 401 'Unauthorized' ('{"error":"' + $why + '"}'); return }
@@ -495,7 +541,7 @@ function Invoke-Media($c) {
   $id = Get-Query $c 'id'
   if ($id -notmatch '^[A-Za-z0-9-]{1,64}$') { Send-Json $c 400 'Bad Request' '{"error":"id"}'; return }
   if ($c.Method -eq 'POST') {
-    if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
+    if (-not (Test-ConsoleAccess $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
     if (-not (Test-Origin $c)) { Send-Json $c 403 'Forbidden' '{"error":"origen"}'; return }
     $type = ([string]$c.Headers['content-type']).Split(';')[0].Trim().ToLowerInvariant()
     if ($MediaTypes -notcontains $type) { Send-Json $c 415 'Unsupported Media Type' '{"error":"tipo"}'; return }
@@ -517,7 +563,7 @@ function Invoke-Media($c) {
 
 # La consola (su HTML) solo se entrega a un equipo que entró con el PIN.
 function Invoke-App($c) {
-  if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
+  if (-not (Test-ConsoleAccess $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
   if ($c.Method -ne 'POST') { Send-Json $c 405 'Method Not Allowed' '{"error":"metodo"}'; return }
   if (-not (Test-Origin $c)) { Send-Json $c 403 'Forbidden' '{"error":"origen"}'; return }
   $why = Test-Signature $c
@@ -534,9 +580,9 @@ function Invoke-Static($c) {
     ($segments | Where-Object { $_ -eq '' -or $_.StartsWith('.') }) -or $segments[0] -eq 'server' -or
     $path -match '\.(sh|ps1|cmd|bat|md|bak|log)$' -or $path -eq '/console.html'
   if ($denied) { Send-Json $c 403 'Forbidden' '{"error":"prohibido"}'; return }
-  $full = [IO.Path]::GetFullPath((Join-Path $Root ($path.TrimStart('/').Replace('/', '\'))))
+  $full = [IO.Path]::GetFullPath((Join-Path $Root ($path.TrimStart('/').Replace([char]'/', $Separator))))
   $ext = [IO.Path]::GetExtension($full).ToLowerInvariant()
-  if (-not $full.StartsWith($Root + '\', [StringComparison]::OrdinalIgnoreCase) -or -not $Mime.ContainsKey($ext) -or -not (Test-Path -LiteralPath $full -PathType Leaf)) {
+  if (-not $full.StartsWith($Root + $Separator, [StringComparison]::OrdinalIgnoreCase) -or -not $Mime.ContainsKey($ext) -or -not (Test-Path -LiteralPath $full -PathType Leaf)) {
     Send-Json $c 404 'Not Found' '{"error":"no-existe"}'; return
   }
   Send-File $c $full $Mime[$ext] 'no-cache' $null
@@ -544,7 +590,8 @@ function Invoke-Static($c) {
 
 function Invoke-Request($c) {
   # Contra el «DNS rebinding»: solo se responde si se pide por el nombre de este equipo.
-  if ($AllowedHosts -notcontains $c.Headers['host']) { Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return }
+  $hostsForConnection = if ($c.Panel) { $PanelHosts } else { $AllowedHosts }
+  if ($hostsForConnection -notcontains $c.Headers['host']) { Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return }
   if (Test-Remote $c) {
     if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"tunel-local"}'; return }
     if ($c.Headers['x-forwarded-proto'] -cne 'https') { Send-Json $c 403 'Forbidden' '{"error":"https"}'; return }
@@ -553,6 +600,12 @@ function Invoke-Request($c) {
   }
   # El modo local solo acepta conexiones de loopback.
   if (-not $Red -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
+  if ($PanelRed -and $c.Method -eq 'GET' -and $c.Path -eq '/' -and -not $c.Query -and
+      $LanUrls -contains "http://$($c.Headers['host'])") {
+    $ip = $c.Headers['host'].Split(':')[0]
+    Send-Bytes $c 302 'Found' @{ Location = "https://${ip}:$PuertoPanel/"; 'Cache-Control' = 'no-store' } (New-Object byte[] 0)
+    return
+  }
   switch ($c.Path) {
     '/api/auth' { Invoke-Auth $c }
     '/api/live' { Invoke-Live $c }
@@ -616,15 +669,35 @@ function Complete-Body($c) {
   try { Invoke-Request $c } catch { Send-Json $c 500 'Internal Server Error' '{"error":"servidor"}' }
 }
 
+function Read-Conn($c, [int]$size) {
+  # SslStream puede tener datos descifrados aunque el socket no tenga más bytes pendientes.
+  if ($null -eq $c.ReadTask) {
+    $c.ReadBuffer = New-Object byte[] $size
+    $c.ReadTask = $c.Stream.ReadAsync($c.ReadBuffer, 0, $size)
+  }
+  if (-not $c.ReadTask.IsCompleted) { return -1 }
+  $count = $c.ReadTask.GetAwaiter().GetResult()
+  $c.ReadTask = $null
+  return $count
+}
+
 function Step-Conn($c) {
   $did = $false
   switch ($c.Phase) {
+    'tls' {
+      if ($c.Handshake.IsCompleted) {
+        [void]$c.Handshake.GetAwaiter().GetResult()
+        $c.Handshake = $null
+        $c.Phase = 'head'
+        $c.Since = [DateTime]::UtcNow
+        $did = $true
+      } elseif (([DateTime]::UtcNow - $c.Since).TotalSeconds -gt 10) { Close-Conn $c }
+    }
     'head' {
-      if ($c.Stream.DataAvailable) {
-        $buf = New-Object byte[] 8192
-        $n = $c.Stream.Read($buf, 0, $buf.Length)
-        if ($n -le 0) { Close-Conn $c; return $true }
-        $c.Head.Write($buf, 0, $n)
+      $n = Read-Conn $c 8192
+      if ($n -ge 0) {
+        if ($n -eq 0) { Close-Conn $c; return $true }
+        $c.Head.Write($c.ReadBuffer, 0, $n)
         $data = $c.Head.ToArray()
         $text = [Text.Encoding]::ASCII.GetString($data)
         $end = $text.IndexOf("`r`n`r`n")
@@ -634,11 +707,10 @@ function Step-Conn($c) {
       } elseif (([DateTime]::UtcNow - $c.Since).TotalSeconds -gt 10) { Close-Conn $c }
     }
     'body' {
-      if ($c.Stream.DataAvailable) {
-        $buf = New-Object byte[] 262144
-        $n = $c.Stream.Read($buf, 0, [int][Math]::Min($buf.Length, $c.Remaining))
-        if ($n -le 0) { Close-Conn $c; return $true }
-        Add-Body $c $buf 0 $n
+      $n = Read-Conn $c ([int][Math]::Min(262144, $c.Remaining))
+      if ($n -ge 0) {
+        if ($n -eq 0) { Close-Conn $c; return $true }
+        Add-Body $c $c.ReadBuffer 0 $n
         if ($c.Remaining -le 0) { Complete-Body $c }
         $c.Since = [DateTime]::UtcNow
         $did = $true
@@ -659,69 +731,100 @@ function Step-Conn($c) {
 }
 
 # ───────────── Arranque ─────────────
-$requestedPort = $Puerto
-$lastPort = 65535
-if ($PSBoundParameters.ContainsKey('Puerto')) { $lastPort = $Puerto }
+# ───────────── Arranque ─────────────
+function Open-Listeners([Net.IPAddress[]]$addresses, [int]$firstPort, [bool]$fixedPort, [string]$option) {
+  $lastPort = 65535
+  if ($fixedPort) { $lastPort = $firstPort }
+  for ($port = $firstPort; $port -le $lastPort; $port++) {
+    $active = @()
+    try {
+      foreach ($address in $addresses) {
+        $listener = New-Object Net.Sockets.TcpListener($address, $port)
+        $active += $listener
+        $listener.ExclusiveAddressUse = $true
+        $listener.Start()
+      }
+      return @{ Port = $port; Listeners = $active }
+    } catch {
+      $cause = $_.Exception.GetBaseException()
+      foreach ($listener in $active) { try { $listener.Stop() } catch {} }
+      # Windows también puede devolver AccessDenied para un puerto reservado.
+      if ($cause -isnot [Net.Sockets.SocketException] -or $cause.SocketErrorCode -notin 'AddressAlreadyInUse', 'AccessDenied') { throw }
+    }
+  }
+  throw "No se pudo abrir un puerto a partir del $firstPort. Indica uno disponible con $option."
+}
 
+$requestedPort = $Puerto
 $bindAddr = [Net.IPAddress]::Loopback
 if ($Red) { $bindAddr = [Net.IPAddress]::Any }
 $bindAddresses = @($bindAddr)
-# localhost puede resolverse por IPv4 o IPv6. Reserva primero el mismo puerto para ambos.
+# localhost puede resolverse por IPv4 o IPv6. Reserva el mismo puerto para ambos.
 if ([Net.Sockets.Socket]::OSSupportsIPv6) { $bindAddresses += [Net.IPAddress]::IPv6Loopback }
 
-while ($true) {
-  $listeners = @()
-  try {
-    foreach ($address in $bindAddresses) {
-      $listener = New-Object Net.Sockets.TcpListener($address, $Puerto)
-      $listeners += $listener
-      $listener.ExclusiveAddressUse = $true
-      $listener.Start()
-    }
-    break
-  } catch {
-    $cause = $_.Exception.GetBaseException()
-    foreach ($listener in $listeners) { try { $listener.Stop() } catch {} }
-    # Windows también puede devolver AccessDenied para un puerto reservado.
-    if ($cause -isnot [Net.Sockets.SocketException] -or $cause.SocketErrorCode -notin 'AddressAlreadyInUse', 'AccessDenied') { throw }
-    if ($Puerto -eq $lastPort) {
-      Write-Host "No se pudo abrir un puerto a partir del $requestedPort. Indica uno disponible con -Puerto."
-      exit 1
-    }
-    $Puerto++
-  }
-}
-
-$Url = "http://localhost:$Puerto"
-$LanUrls = @($LanIps | ForEach-Object { "http://${_}:$Puerto" })
-$AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + @($LanIps | ForEach-Object { "${_}:$Puerto" })
-$AllowedOrigins = @($Url, "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
-if ($RemoteHost) { $AllowedHosts += $RemoteHost }
-
-if ($Puerto -ne $requestedPort) { Write-Host "El puerto $requestedPort está ocupado o reservado. Biblia usará el $Puerto." }
-Write-Host '=============================================='
-Write-Host '  Biblia · by @jairohm.dev'
-Write-Host '=============================================='
-Write-Host "  App       : $Url"
-if ($OrigenRemoto) {
-  Write-Host "  Remoto    : $OrigenRemoto (requiere PIN)"
-  Write-Host "  Túnel     : ngrok http http://127.0.0.1:$Puerto --url $OrigenRemoto --inspect=false"
-}
-Write-Host "  OBS       : $Url/?salida&obs"
-Write-Host '  OBS (solo texto, fondo transparente):'
-Write-Host "              $Url/?salida&obs&transparente"
-if ($Red) {
-  foreach ($base in $LanUrls) { Write-Host "  Ver en otro dispositivo de la red:`n              $base/?salida&obs&k=$Viewer" }
-  Write-Host '  Si Windows pregunta por el firewall, permite el acceso solo en redes PRIVADAS.'
-}
-Write-Host "  Sesión    : se pide el PIN tras $SesionMin min sin usar la consola"
-Write-Host '  Ayuda     : iniciar-windows.cmd -Ayuda'
-Write-Host '  Detener   : Ctrl+C o cierra esta ventana'
-Write-Host '=============================================='
+$listeners = @()
+$panelListeners = @()
+$PanelHosts = @()
+$PanelUrls = @()
+$panelCertificate = $null
 $conns = New-Object Collections.ArrayList
 try {
+  if ($PanelRed -and -not $LanIps.Count) {
+    throw 'Conecta esta PC a la red para habilitar el acceso al panel por IP.'
+  }
+
+  $http = Open-Listeners $bindAddresses $Puerto ($PSBoundParameters.ContainsKey('Puerto')) '-Puerto'
+  $Puerto = $http.Port
+  $listeners += $http.Listeners
+  $Url = "http://localhost:$Puerto"
+  $LanUrls = @($LanIps | ForEach-Object { "http://${_}:$Puerto" })
+  $AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + @($LanIps | ForEach-Object { "${_}:$Puerto" })
+  $AllowedOrigins = @($Url, "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
+  if ($RemoteHost) { $AllowedHosts += $RemoteHost }
+
+  if ($PanelRed) {
+    $panelAddresses = @($LanIps | ForEach-Object { [Net.IPAddress]::Parse($_) })
+    $https = Open-Listeners $panelAddresses $PuertoPanel ($PSBoundParameters.ContainsKey('PuertoPanel')) '-PuertoPanel'
+    $PuertoPanel = $https.Port
+    $panelListeners = $https.Listeners
+    $listeners += $panelListeners
+    $PanelHosts = @($LanIps | ForEach-Object { "${_}:$PuertoPanel" })
+    $PanelUrls = @($PanelHosts | ForEach-Object { "https://$_" })
+    . (Join-Path $Root 'server/panel-cert.ps1')
+    $panelCertificate = Get-PanelCertificate $LanIps $Conf $CertificadoPanel
+  }
+
+  if ($Puerto -ne $requestedPort) { Write-Host "El puerto $requestedPort está ocupado o reservado. Biblia usará el $Puerto." }
+  Write-Host '=============================================='
+  Write-Host '  Biblia · by @jairohm.dev'
+  Write-Host '=============================================='
+  $openUrl = $Url
+  if ($changePinOnStart -and (Get-StoredPin)) { $openUrl = "$Url/?cambiar-pin" }
+  Write-Host "  App       : $openUrl"
+  if ($PanelRed) {
+    foreach ($panelUrl in $PanelUrls) { Write-Host "  Acceso al panel con PIN: $panelUrl" }
+    if ($panelCertificate.TrustFile) {
+      Write-Host "  Certificado público de Biblia: $($panelCertificate.TrustFile)"
+      Write-Host '  Instala ese certificado como autoridad de confianza en los dispositivos que usarán el panel.'
+    }
+  }
+  if ($OrigenRemoto) {
+    Write-Host "  Remoto    : $OrigenRemoto (requiere PIN)"
+    Write-Host "  Túnel     : ngrok http http://127.0.0.1:$Puerto --url $OrigenRemoto --inspect=false"
+  }
+  Write-Host "  OBS       : $Url/?salida&obs"
+  Write-Host '  OBS (solo texto, fondo transparente):'
+  Write-Host "              $Url/?salida&obs&transparente"
+  if ($Red) {
+    foreach ($base in $LanUrls) { Write-Host "  Ver en otro dispositivo de la red:`n              $base/?salida&obs&k=$Viewer" }
+    Write-Host '  Si Windows pregunta por el firewall, permite el acceso solo en redes PRIVADAS.'
+  }
+  Write-Host "  Sesión    : se pide el PIN tras $SesionMin min sin usar la consola"
+  Write-Host '  Ayuda     : iniciar-windows.cmd -Ayuda'
+  Write-Host '  Detener   : Ctrl+C o cierra esta ventana'
+  Write-Host '=============================================='
   New-Item -ItemType Directory -Force -Path $Run | Out-Null
-  if (-not $NoAbrir) { Start-Process $Url }
+  if (-not $NoAbrir) { Start-Process $openUrl }
   while ($true) {
     $busy = $false
     foreach ($l in $listeners) {
@@ -729,11 +832,21 @@ try {
         $client = $l.AcceptTcpClient()
         $client.NoDelay = $true
         $client.SendTimeout = 15000
-        [void]$conns.Add(@{
-            Client = $client; Stream = $client.GetStream(); Head = New-Object IO.MemoryStream; Phase = 'head'; Since = [DateTime]::UtcNow
-            Method = ''; Target = ''; Path = ''; Query = ''; Headers = @{}; Remaining = 0; Hasher = $null; BodyMem = $null
-            BodyFile = $null; BodyPath = $null; BodyText = ''; BodyHash = ''; File = $null; WaitRev = 0; Deadline = [DateTime]::MinValue
-          })
+        $c = @{
+          Client = $client; Stream = $client.GetStream(); Head = New-Object IO.MemoryStream; Phase = 'head'; Since = [DateTime]::UtcNow
+          Method = ''; Target = ''; Path = ''; Query = ''; Headers = @{}; Remaining = 0; Hasher = $null; BodyMem = $null
+          BodyFile = $null; BodyPath = $null; BodyText = ''; BodyHash = ''; File = $null; WaitRev = 0; Deadline = [DateTime]::MinValue
+          Panel = $panelListeners -contains $l; Handshake = $null; ReadTask = $null; ReadBuffer = $null
+        }
+        if ($c.Panel) {
+          try {
+            $c.Stream = [Net.Security.SslStream]::new($c.Stream, $false)
+            $c.Handshake = $c.Stream.AuthenticateAsServerAsync($panelCertificate.Cert, $false,
+              [Security.Authentication.SslProtocols]::Tls12, $false)
+            $c.Phase = 'tls'
+          } catch { Close-Conn $c; continue }
+        }
+        [void]$conns.Add($c)
         $busy = $true
       }
     }
@@ -746,5 +859,6 @@ try {
 } finally {
   foreach ($c in @($conns)) { Close-Conn $c }
   foreach ($l in $listeners) { try { $l.Stop() } catch {} }
+  if ($panelCertificate) { $panelCertificate.Cert.Dispose() }
   Remove-Item -Recurse -Force $Run -ErrorAction SilentlyContinue
 }

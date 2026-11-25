@@ -17,7 +17,7 @@ const PBKDF2_ROUNDS = 210000;
 const DESKTOP = !!window.__TAURI__?.core;
 const tauri = (cmd, args, opts) => window.__TAURI__.core.invoke(cmd, args, opts);
 const INSTALL_KEY = 'biblia.instalacion';
-const auth = { mode: 'none', device: null, viewer: '', lanUrls: [], salt: '', configured: false, name: '', onUnlock: null };
+const auth = { mode: 'none', device: null, viewer: '', lanUrls: [], panelUrls: [], salt: '', configured: false, name: '', onUnlock: null };
 
 const hexOf = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const b64Of = (bytes) => btoa(String.fromCharCode(...bytes));
@@ -157,6 +157,7 @@ async function checkSession(keep = false) {
     const session = await res.json();
     auth.viewer = session.viewer || '';
     auth.lanUrls = Array.isArray(session.lanUrls) ? session.lanUrls : [];
+    auth.panelUrls = Array.isArray(session.panelUrls) ? session.panelUrls : [];
     return true;
   } catch {
     return null;
@@ -186,6 +187,10 @@ async function createPin(pin, name) {
 
 async function loginPin(pin) {
   if (DESKTOP) return tauri('auth_login', { verifier: await pinVerifier(pin, auth.salt) });
+  const status = await authStatus();
+  if (!status) return { status: 0 };
+  if (!status.configured) return { status: 409, error: 'sin-pin', registroLocal: status.registroLocal };
+  auth.salt = status.salt;
   const [verifier, device] = await Promise.all([pinVerifier(pin, auth.salt), deviceKey(true)]);
   const r = await postAuth('entrar', { verifier, pub: device.pub });
   if (r.status !== 200) return r;
@@ -256,7 +261,8 @@ const GATE_TEXT = {
   login: ['Entrar', 'Escribe el PIN de la consola para continuar.', 'Entrar'],
   change: ['Cambiar el PIN', 'Escribe el PIN de ahora y luego el nuevo. Los demás equipos tendrán que volver a entrar.', 'Guardar PIN'],
   noserver: ['Abre la app con su servidor', 'La consola está protegida con PIN y necesita su servidor. Ábrela con «serve.sh» (macOS o Linux) o con «iniciar-windows.cmd» (Windows) y entra en http://localhost:3737.', ''],
-  insecure: ['Abre la consola en este equipo', '', ''],
+  insecure: ['Abre el enlace de acceso al panel', 'En otro dispositivo, usa el enlace HTTPS que muestra Biblia al iniciar con acceso por IP o con ngrok.', ''],
+  'setup-local': ['Crea el PIN en la PC de Biblia', 'Completa el registro en la PC que ejecuta Biblia y vuelve a cargar esta página.', ''],
 };
 
 // Retira la pantalla de arranque con un fundido corto.
@@ -273,9 +279,7 @@ function showGate(mode) {
   gate.classList.toggle('over-app', mounted && mode !== 'change');
   gate.classList.toggle('sheet-mode', mode === 'change');
   $('#gateTitle').textContent = title;
-  $('#gateLead').textContent = mode === 'insecure'
-    ? `Por seguridad, la consola solo se controla desde el equipo donde corre el servidor: http://localhost:${location.port || 80}`
-    : lead;
+  $('#gateLead').textContent = lead;
   $('#gateHello').textContent = mode === 'register' ? 'Te damos la bienvenida a' : 'Consola de proyección';
   $('#gateName').textContent = auth.name || 'Biblia';
   const show = (id, on) => { $(id).hidden = !on; };
@@ -387,6 +391,10 @@ async function submitGate() {
     $(gateMode === 'change' ? '#gateCurrent' : '#gatePin').select();
     return;
   }
+  if (r.status === 409 && r.error === 'sin-pin') {
+    showGate(r.registroLocal ? 'setup-local' : 'register');
+    return;
+  }
   if (r.status === 409 && gateMode === 'register') {
     const st = await authStatus();
     auth.salt = st?.salt || '';
@@ -395,7 +403,9 @@ async function submitGate() {
     setGateMessage('Ya hay un PIN en este servidor. Escríbelo para entrar.', 'info');
     return;
   }
-  setGateMessage('No se pudo hablar con el servidor. ¿Sigue abierta la ventana de serve.sh?');
+  setGateMessage(r.status
+    ? 'Biblia no pudo completar la operación. Vuelve a intentarlo.'
+    : 'Comprueba que Biblia siga ejecutándose y vuelve a intentar la conexión.');
 }
 
 /* ───────────── Consola: montar, bloquear y vigilar ───────────── */
@@ -433,6 +443,12 @@ function unlockConsole() {
     if (auth.mode === 'open' && (await checkSession(!!auth.keepAlive?.())) === false) lockConsole();
   }, 20000);
   auth.onUnlock?.();
+  const url = new URL(location.href);
+  if (url.searchParams.has('cambiar-pin')) {
+    url.searchParams.delete('cambiar-pin');
+    history.replaceState(history.state, '', url);
+    showGate('change');
+  }
 }
 
 // La sesión terminó con la consola abierta: la portada aparece encima y la consola queda inerte.
@@ -535,6 +551,7 @@ async function startGate() {
   initGate();
   try {
     const secure = DESKTOP || (window.isSecureContext && !!crypto.subtle);
+    if (!secure && /^https?:$/.test(location.protocol)) { showGate('insecure'); return; }
     // El estado del servidor y la llave del equipo se piden a la vez: arranque más rápido.
     const [st, device] = await Promise.all([authStatus(), secure && !DESKTOP ? deviceKey(false).catch(() => null) : null]);
     if (!st) { showGate('noserver'); return; }
@@ -543,7 +560,7 @@ async function startGate() {
     auth.configured = !!st.configured;
     auth.salt = st.salt || '';
     auth.name = nameFromB64(st.name || '');
-    if (!st.configured) { showGate('register'); return; }
+    if (!st.configured) { showGate(st.registroLocal ? 'setup-local' : 'register'); return; }
     auth.device = device;
     if ((DESKTOP || auth.device) && await checkSession()) { await openConsole(); return; }
     showGate('login');

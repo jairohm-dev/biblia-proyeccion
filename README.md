@@ -60,8 +60,9 @@ cd biblia-proyeccion
 ./serve.sh            # macOS / Linux → http://localhost:3737
 ```
 
-En **Windows**, haz doble clic en `iniciar-windows.cmd`. Biblia se abre en el navegador
-en `http://localhost:3737` o en el siguiente puerto disponible si el 3737 está ocupado.
+En **Windows**, haz doble clic en `iniciar-windows.cmd` y elige **Iniciar Biblia**.
+Se abre el navegador en `http://localhost:3737` o en el siguiente puerto disponible.
+El menú también permite cambiar el PIN y habilitar el acceso al panel desde otro dispositivo.
 En **OBS → Ver en otro dispositivo** puedes copiar el enlace para ver la proyección desde la misma red.
 
 <details>
@@ -81,9 +82,8 @@ En Windows, `iniciar-windows.cmd -Ayuda` muestra todas las opciones, entre ellas
 En macOS usa el Apache del sistema; en Linux, el de la distribución (`sudo apt install apache2`).
 </details>
 
-Para controlar la versión web desde otra computadora mediante un enlace HTTPS, consulta
-la [guía de acceso remoto con ngrok](docs/ACCESO-REMOTO.md). Es opcional: requiere autorizar
-un dominio exacto y conserva el PIN y las firmas por dispositivo.
+La versión web permite controlar el panel desde otro dispositivo con HTTPS y el PIN de Biblia.
+Consulta la [guía de acceso por IP en Windows y por ngrok](docs/ACCESO-REMOTO.md).
 
 ### Uso básico
 
