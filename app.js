@@ -270,8 +270,9 @@ let sharedLibrary = null;
 let pendingSettings = {};
 let sendingSettings = {};
 let settingsTimer = 0;
-let settingsBusy = false;
+let settingsSave = null;
 let settingsAvailable = true;
+let settingsReadFailed = false;
 
 function readPreference(key, fallback) {
   return Object.hasOwn(sharedSettings, key) ? sharedSettings[key] : store.get(PREFERENCES[key], fallback);
@@ -490,25 +491,40 @@ function markLibraryAlive(kind, id) {
 
 
 async function readSharedSettings() {
-  const res = await signedFetch('api/settings?accion=leer', { timeout: 12000 });
+  const res = await signedFetch('api/settings?accion=leer&formato=conrevision', { timeout: 12000 });
   if ([404, 405].includes(res.status)) { settingsAvailable = false; return null; }
-  const revision = /^"(0|[0-9a-f]{64})"$/.exec(res.headers.get('etag') || '')?.[1];
-  if (!res.ok || !revision) throw new Error('ajustes');
-  return { revision, settings: cleanSettings(await res.json()) };
+  if (!res.ok) throw new Error('ajustes');
+  const payload = await res.json();
+  if (/^(0|[0-9a-f]{64})$/.test(payload?.revision) && payload.ajustes) {
+    return { revision: payload.revision, settings: cleanSettings(payload.ajustes) };
+  }
+  // Los servidores anteriores entregaban el documento directo con su ETag.
+  const revision = /^(?:W\/)?"(0|[0-9a-f]{64})"$/.exec(res.headers.get('etag') || '')?.[1];
+  if (!revision) throw new Error('ajustes');
+  return { revision, settings: cleanSettings(payload) };
 }
 
 async function preloadSharedSettings() {
   if (DESKTOP) return;
   pendingSettings = cleanSettings(store.get(SETTINGS_DRAFT, {}));
-  const snapshot = await readSharedSettings().catch(() => null);
+  const snapshot = await readSharedSettings().catch(() => {
+    settingsReadFailed = true;
+    return null;
+  });
   if (snapshot && localConsole()) {
     const legacy = store.get(KEY.ui, {}) || {};
     const saved = Object.fromEntries(Object.entries(PREFERENCES).map(([key, path]) => [key, store.get(path)]));
     saved.bibleId ??= legacy.bibleId;
     saved.inspectorTab ??= legacy.inspTab;
     // Importa preferencias añadidas en esta versión sin pisar las que ya están en el servidor.
-    const missing = Object.fromEntries(Object.entries(cleanSettings(saved)).filter(([key]) =>
+    const localSettings = cleanSettings(saved);
+    const missing = Object.fromEntries(Object.entries(localSettings).filter(([key]) =>
       !Object.hasOwn(snapshot.settings, key)));
+    if (localSettings.look && snapshot.settings.look) {
+      const missingLook = Object.fromEntries(Object.entries(localSettings.look).filter(([key]) =>
+        !Object.hasOwn(snapshot.settings.look, key)));
+      if (Object.keys(missingLook).length) missing.look = missingLook;
+    }
     pendingSettings = mergeSettings(missing, pendingSettings);
   }
   // La biblioteca se une con lo que ya había en este equipo y con lo que hay en el servidor.
@@ -563,12 +579,18 @@ function queueSettings(patch) {
 function scheduleSettingsSave(delay = 250) {
   if (DESKTOP || !settingsAvailable || !Object.keys(pendingSettings).length) return;
   clearTimeout(settingsTimer);
-  if (!settingsBusy && auth.mode === 'open') settingsTimer = setTimeout(savePendingSettings, delay);
+  if (!settingsSave && auth.mode === 'open') settingsTimer = setTimeout(savePendingSettings, delay);
 }
 
-async function savePendingSettings() {
-  if (auth.mode !== 'open') return;
-  settingsBusy = true;
+function savePendingSettings() {
+  if (settingsSave) return settingsSave;
+  if (auth.mode !== 'open' || !settingsAvailable || !Object.keys(pendingSettings).length) return;
+  clearTimeout(settingsTimer);
+  settingsSave = writePendingSettings();
+  return settingsSave;
+}
+
+async function writePendingSettings() {
   const patch = pendingSettings;
   sendingSettings = patch;
   pendingSettings = {};
@@ -584,7 +606,7 @@ async function savePendingSettings() {
       body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' }, timeout: 20000,
     });
     if (res.ok) {
-      if (body.library) applyLibraryToLocal(mergeLibrary(body.library, localLibrary()));
+      if (patch.library) applyLibraryToLocal(mergeLibrary(body.library, localLibrary()));
     } else {
       if (res.status === 413) {
         const rest = { ...patch };
@@ -606,7 +628,7 @@ async function savePendingSettings() {
   } finally {
     sendingSettings = {};
     checkpointSettings();
-    settingsBusy = false;
+    settingsSave = null;
     scheduleSettingsSave(delay);
   }
 }
@@ -4610,6 +4632,7 @@ function applyTheme(theme) {
 const internetPanelLink = (url) => new URL(url).hostname.endsWith('.trycloudflare.com');
 const sharingActive = (mode) => auth.panelUrls.some((url) => internetPanelLink(url) === (mode === 'internet'));
 let sharingBusy = false;
+const appearancePending = () => !!(pendingSettings.look || pendingSettings.theme || sendingSettings.look || sendingSettings.theme);
 
 function renderPanelSharing(message = '') {
   $('#panelSharingOptions').hidden = DESKTOP || !localConsole();
@@ -4622,12 +4645,26 @@ function renderPanelSharing(message = '') {
   $('#panelLanCertificate').hidden = !sharingActive('red');
   $('#panelSharingPin').hidden = !auth.panelUrls.length;
   renderCopyLinks('#panelLanLinks', 'panelLanLink', auth.panelUrls, 'Enlace de acceso al panel');
+  $$('#panelLanLinks button').forEach(button => { button.disabled = sharingBusy; });
 }
 
 async function openPanelSharing() {
   renderPanelSharing();
   $('#panelLanDialog').showModal();
-  if (!sharingBusy && await checkSession()) renderPanelSharing();
+  if (sharingBusy) return;
+  if (appearancePending()) {
+    const inProgress = !!settingsSave;
+    sharingBusy = true;
+    renderPanelSharing('Guardando la apariencia compartida…');
+    try {
+      await savePendingSettings();
+      if (inProgress && appearancePending()) await savePendingSettings();
+    } finally {
+      sharingBusy = false;
+    }
+  }
+  await checkSession();
+  renderPanelSharing(appearancePending() ? 'La apariencia todavía está pendiente de guardar en el servidor.' : '');
 }
 
 async function changePanelSharing(mode) {
@@ -4696,6 +4733,16 @@ function startConsole() {
     $('#panelLanBtn').hidden = (DESKTOP || !localConsole()) && !auth.panelUrls.length;
     resyncServer();
     scheduleSettingsSave(0);
+    if (settingsReadFailed) {
+      settingsReadFailed = false;
+      toast('No se pudieron cargar los ajustes compartidos.', {
+        label: 'Reintentar',
+        fn: async () => {
+          if (await pullSharedChanges()) location.reload();
+          else toast('No se pudieron cargar los ajustes. Comprueba la conexión con Biblia.');
+        },
+      });
+    }
     watchStudioProjection();
   };
   auth.keepAlive = () => state.onAir;

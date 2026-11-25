@@ -157,10 +157,13 @@ while :; do sleep 0.1; done
   assert.equal(JSON.parse(session.text).viewer, viewer);
   await expect(200, '/api/app', signed('/api/app'));
   const settingsPath = '/api/settings?accion=leer';
+  const settingsWithRevisionPath = settingsPath + '&formato=conrevision';
   const writeSettings = '/api/settings?accion=guardar&revision=0';
   const settings = JSON.stringify({ look: { size: 96 }, theme: 'dark', studio: true });
   await expect(401, settingsPath, { method: 'POST' });
   assert.equal((await expect(200, settingsPath, signed(settingsPath))).headers.etag, '"0"');
+  const emptySnapshot = await expect(200, settingsWithRevisionPath, signed(settingsWithRevisionPath));
+  assert.deepEqual(JSON.parse(emptySnapshot.text), { revision: '0', ajustes: {} });
   await expect(200, writeSettings, signed(writeSettings, settings));
   await expect(409, writeSettings, signed(writeSettings, '{}'));
   assert.equal((await expect(200, settingsPath, signed(settingsPath))).text, settings);
@@ -210,6 +213,8 @@ while :; do sleep 0.1; done
   const snapshot = await expect(200, settingsPath, signed(settingsPath, '', invite));
   assert.equal(snapshot.text, settings);
   assert.equal(snapshot.headers.etag, `"${hash(settings)}"`);
+  const portableSnapshot = await expect(200, settingsWithRevisionPath, signed(settingsWithRevisionPath, '', invite));
+  assert.deepEqual(JSON.parse(portableSnapshot.text), { revision: hash(settings), ajustes: JSON.parse(settings) });
   const checkPath = '/api/auth?accion=comprobar';
   const localSession = await expect(200, checkPath, { ...signed(checkPath, '', { Origin: `http://localhost:${port}` }), remote: false });
   assert.deepEqual(JSON.parse(localSession.text).panelUrls, [`${tunnelOrigin}/#acceso=${access}`]);

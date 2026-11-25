@@ -22,7 +22,13 @@ case "$action" in
       printf '{}' > "$WORK/ajustes.json"
     fi
     printf 'Content-Type: application/json\r\nCache-Control: no-store\r\nETag: "%s"\r\n\r\n' "$revision"
-    cat "$WORK/ajustes.json" ;;
+    case "&$QUERY_STRING&" in
+      *'&formato=conrevision&'*)
+        printf '{"revision":"%s","ajustes":' "$revision"
+        cat "$WORK/ajustes.json"
+        printf '}' ;;
+      *) cat "$WORK/ajustes.json" ;;
+    esac ;;
   guardar)
     read_body 16777216
     verify_signature

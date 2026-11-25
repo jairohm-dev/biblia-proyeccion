@@ -651,13 +651,48 @@ function Invoke-Static($c) {
   Send-File $c $full $Mime[$ext] 'no-cache' $null
 }
 
-function Read-Settings {
+function Open-SettingsSnapshot {
   $path = Join-Path $Conf 'ajustes.json'
-  if (Test-Path -LiteralPath $path) {
-    $body = [IO.File]::ReadAllBytes($path)
-    return @{ Body = $body; Revision = (Get-Sha256Hex $body) }
+  if (-not [IO.File]::Exists($path)) {
+    return @{ File = [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('{}')); Revision = '0' }
   }
-  return @{ Body = [Text.Encoding]::UTF8.GetBytes('{}'); Revision = '0' }
+
+  $file = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    $revision = ConvertTo-Hex $hasher.ComputeHash($file)
+    $file.Position = 0
+    return @{ File = $file; Revision = $revision }
+  } catch {
+    $file.Dispose()
+    throw
+  } finally {
+    $hasher.Dispose()
+  }
+}
+
+function Send-SettingsSnapshot($c, $snapshot, [bool]$withRevision) {
+  $file = $snapshot.File
+  $headers = @{ 'Content-Type' = 'application/json'; 'Cache-Control' = 'no-store' }
+  try {
+    $length = $file.Length
+    if ($withRevision) {
+      $prefix = [Text.Encoding]::UTF8.GetBytes('{"revision":"' + $snapshot.Revision + '","ajustes":')
+      # Ignora una marca UTF-8 inicial al insertar un documento existente dentro del JSON.
+      if ($file.ReadByte() -ne 0xEF -or $file.ReadByte() -ne 0xBB -or $file.ReadByte() -ne 0xBF) { $file.Position = 0 }
+      $length = $prefix.Length + $file.Length - $file.Position + 1
+    } else {
+      $headers['ETag'] = '"' + $snapshot.Revision + '"'
+    }
+    Send-Head $c 200 'OK' $headers $length
+    if ($withRevision) { $c.Stream.Write($prefix, 0, $prefix.Length) }
+    $file.CopyTo($c.Stream, 65536)
+    if ($withRevision) { $c.Stream.WriteByte(125) }
+  } catch { }
+  finally {
+    $file.Dispose()
+    Close-Conn $c
+  }
 }
 
 function Invoke-Settings($c) {
@@ -669,9 +704,7 @@ function Invoke-Settings($c) {
 
   switch (Get-Query $c 'accion') {
     'leer' {
-      $snapshot = Read-Settings
-      Send-Bytes $c 200 'OK' @{ 'Content-Type' = 'application/json'; 'Cache-Control' = 'no-store';
-        'ETag' = ('"' + $snapshot.Revision + '"') } $snapshot.Body
+      Send-SettingsSnapshot $c (Open-SettingsSnapshot) ((Get-Query $c 'formato') -eq 'conrevision')
     }
     'guardar' {
       $revision = Get-Query $c 'revision'
@@ -688,10 +721,13 @@ function Invoke-Settings($c) {
         return
       }
       try {
-        if ((Read-Settings).Revision -cne $revision) { Send-Json $c 409 'Conflict' '{"error":"revision"}'; return }
+        $current = Open-SettingsSnapshot
+        $current.File.Dispose()
+        if ($current.Revision -cne $revision) { Send-Json $c 409 'Conflict' '{"error":"revision"}'; return }
         $path = Join-Path $Conf 'ajustes.json'
         $pending = "$path.tmp"
-        [IO.File]::WriteAllBytes($pending, $c.BodyMem.ToArray())
+        $file = [IO.File]::Open($pending, [IO.FileMode]::Create, [IO.FileAccess]::Write)
+        try { $c.BodyMem.WriteTo($file) } finally { $file.Dispose() }
         if ([IO.File]::Exists($path)) { [IO.File]::Replace($pending, $path, [NullString]::Value) }
         else { [IO.File]::Move($pending, $path) }
       } finally {
@@ -796,7 +832,7 @@ function Complete-Body($c) {
   [void]$c.Hasher.TransformFinalBlock((New-Object byte[] 0), 0, 0)
   $c.BodyHash = ConvertTo-Hex $c.Hasher.Hash
   $c.Hasher.Dispose()
-  if ($c.BodyFile) { $c.BodyFile.Flush() } else { $c.BodyText = [Text.Encoding]::UTF8.GetString($c.BodyMem.ToArray()) }
+  if ($c.BodyFile) { $c.BodyFile.Flush() } else { $c.BodyText = [Text.Encoding]::UTF8.GetString($c.BodyMem.GetBuffer(), 0, [int]$c.BodyMem.Length) }
   $c.Phase = 'handle'
   try { Invoke-Request $c } catch { Send-Json $c 500 'Internal Server Error' '{"error":"servidor"}' }
 }
@@ -814,6 +850,7 @@ function Read-Conn($c, [int]$size) {
 }
 
 $protocolByte = New-Object byte[] 1
+$transferBuffer = New-Object byte[] 65536
 
 function Step-Conn($c) {
   $did = $false
@@ -861,7 +898,7 @@ function Step-Conn($c) {
       } elseif (([DateTime]::UtcNow - $c.Since).TotalSeconds -gt 10) { Close-Conn $c }
     }
     'body' {
-      $n = Read-Conn $c ([int][Math]::Min(262144, $c.Remaining))
+      $n = Read-Conn $c ([int][Math]::Min(65536, $c.Remaining))
       if ($n -ge 0) {
         if ($n -eq 0) { Close-Conn $c; return $true }
         Add-Body $c $c.ReadBuffer 0 $n
@@ -874,10 +911,9 @@ function Step-Conn($c) {
       if ($script:Rev -ne $c.WaitRev -or [DateTime]::UtcNow -gt $c.Deadline) { Send-Live $c; $did = $true }
     }
     'send' {
-      $buf = New-Object byte[] 262144
-      $n = $c.File.Read($buf, 0, $buf.Length)
-      if ($n -gt 0) { try { $c.Stream.Write($buf, 0, $n) } catch { Close-Conn $c; return $true } }
-      if ($n -lt $buf.Length) { Close-Conn $c }
+      $n = $c.File.Read($transferBuffer, 0, $transferBuffer.Length)
+      if ($n -gt 0) { try { $c.Stream.Write($transferBuffer, 0, $n) } catch { Close-Conn $c; return $true } }
+      if ($n -eq 0 -or $c.File.Position -ge $c.File.Length) { Close-Conn $c }
       $did = $true
     }
   }
