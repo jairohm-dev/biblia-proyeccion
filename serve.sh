@@ -6,6 +6,8 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FIXED_PORT=0
+[ -z "${PORT:-}" ] || FIXED_PORT=1
 PORT="${PORT:-3737}"
 # Minutos sin usar la consola tras los que se vuelve a pedir el PIN (720 = 12 horas).
 SESSION_MIN="${BIBLIA_SESION_MIN:-720}"
@@ -13,6 +15,9 @@ REMOTE_ORIGIN="${BIBLIA_ORIGEN_REMOTO:-}"
 REMOTE_HOST=""
 BIND="127.0.0.1"
 RED=0
+PANEL_RED=0
+MENU=0
+CHANGE_PIN=0
 RESET_PIN=0
 RESET_ALL=0
 
@@ -24,11 +29,11 @@ USO
   ./serve.sh [opciones] [puerto]
 
 OPCIONES
-  (sin nada)            Abre la app en http://localhost:3737, solo en este equipo.
-  4000                  Usa otro puerto (entre 1024 y 65535).
+  (sin nada)            Muestra el menú en Terminal. Usa 3737 o el siguiente puerto disponible.
+  4000                  Usa un puerto fijo (entre 1024 y 65535).
+  --menu                Muestra el menú de inicio.
   --red                 Deja que otro equipo de la red vea la salida para OBS.
-                        Desde la red solo se puede VER (con la llave de visor que se
-                        muestra al arrancar); el control sigue siendo solo de este equipo.
+  --panel-red           Habilita el panel con PIN por HTTPS en la IP de este equipo.
   --restablecer-pin     Borra el PIN si lo olvidaste. Al abrir la app pedirá uno nuevo.
   --reiniciar           Deja todo como recién instalado: borra el PIN, el nombre de la
                         iglesia y la llave de visor, y la próxima vez que se abra la app
@@ -41,7 +46,7 @@ OPCIONES
   -h, --ayuda, --help   Muestra esta ayuda.
 
 SEGURIDAD
-  · Por defecto el servidor solo escucha en este equipo: un escaneo de la red no lo ve.
+  · El inicio local escucha en este equipo. El panel por IP requiere HTTPS y el PIN.
   · La consola no se entrega sin PIN: antes de entrar solo existe la portada.
   · La consola pide un PIN cada vez que se enciende el servidor o tras 12 horas sin
     usarla (otro tiempo: BIBLIA_SESION_MIN=30 ./serve.sh para 30 minutos).
@@ -60,14 +65,40 @@ TXT
 for arg in "$@"; do
   case "$arg" in
     -h|--ayuda|--help|ayuda) ayuda; exit 0 ;;
-    --red) BIND="0.0.0.0"; RED=1 ;;
+    --red) RED=1 ;;
+    --panel-red) PANEL_RED=1; RED=1 ;;
+    --menu) MENU=1 ;;
     --restablecer-pin) RESET_PIN=1 ;;
     --reiniciar|--reset|--borrar-todo) RESET_ALL=1 ;;
     --no-abrir) NO_ABRIR=1 ;;
     ''|*[!0-9]*) echo "Opción desconocida: $arg"; echo "Usa ./serve.sh --ayuda para ver las opciones."; exit 1 ;;
-    *) PORT="$arg" ;;
+    *) PORT="$arg"; FIXED_PORT=1 ;;
   esac
 done
+
+if [ "$MENU" = 1 ] || { [ "$#" = 0 ] && [ "$FIXED_PORT" = 0 ] && [ -t 0 ] && [ -z "$REMOTE_ORIGIN" ]; }; then
+  while :; do
+    printf '\nBiblia\n'
+    echo '  1. Iniciar Biblia'
+    echo '  2. Iniciar con acceso al panel por IP (HTTPS)'
+    echo '  3. Cambiar PIN'
+    echo '  4. Restablecer PIN olvidado'
+    echo '  5. Compartir proyección en la red (OBS)'
+    echo '  0. Salir'
+    printf 'Elige una opción [1]: '
+    IFS= read -r opcion || exit 0
+    case "$opcion" in
+      ''|1) break ;;
+      2) PANEL_RED=1; RED=1; break ;;
+      3) CHANGE_PIN=1; break ;;
+      4) RESET_PIN=1; break ;;
+      5) RED=1; break ;;
+      0) exit 0 ;;
+      *) echo 'Elige una de las opciones del menú.' ;;
+    esac
+  done
+fi
+if [ "$RED" = 1 ] && [ "$PANEL_RED" = 0 ]; then BIND="0.0.0.0"; fi
 
 if [ -n "$REMOTE_ORIGIN" ]; then
   if ! [[ "$REMOTE_ORIGIN" =~ ^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || [ "${#REMOTE_ORIGIN}" -gt 261 ]; then
@@ -94,6 +125,7 @@ case "$(uname -s)" in
 esac
 CONF="${BIBLIA_CONF_DIR:-$CONF}"
 mkdir -p "$CONF"
+CONF="$(cd "$CONF" && pwd -P)"
 chmod 700 "$CONF"
 
 if [ "$RESET_ALL" = 1 ]; then
@@ -165,9 +197,15 @@ limpiar_huerfanos() {
 }
 limpiar_huerfanos
 
-if command -v lsof >/dev/null && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "El puerto $PORT ya está en uso. Prueba con otro: ./serve.sh $((PORT + 1))"
-  exit 1
+REQUESTED_PORT="$PORT"
+if command -v lsof >/dev/null; then
+  while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do
+    if [ "$FIXED_PORT" = 1 ] || [ "$PORT" -eq 65535 ]; then
+      echo "El puerto $PORT no está disponible. Indica uno libre al ejecutar ./serve.sh."
+      exit 1
+    fi
+    PORT=$((10#$PORT + 1))
+  done
 fi
 
 [ -s "$CONF/viewer.key" ] || "$OPENSSL" rand -hex 16 > "$CONF/viewer.key"
@@ -191,8 +229,32 @@ trap 'exit 0' INT TERM HUP
 
 LAN_IP=""
 if [ "$RED" = 1 ]; then
-  LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  if command -v ipconfig >/dev/null; then
+    iface="$(route -n get default 2>/dev/null | awk '$1 == "interface:" {print $2; exit}' || true)"
+    LAN_IP="$(ipconfig getifaddr "${iface:-en0}" 2>/dev/null || ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+  else
+    LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  if ! [[ "$LAN_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || [[ "$LAN_IP" == 127.* ]]; then LAN_IP=""; fi
 fi
+
+PANEL_ORIGIN=""
+if [ "$PANEL_RED" = 1 ]; then
+  if [ -z "$LAN_IP" ]; then echo 'Conecta este equipo a la red para habilitar el panel por IP.'; exit 1; fi
+  if [ ! -f "$MODS/mod_ssl.so" ]; then echo 'Apache necesita mod_ssl para abrir el panel por HTTPS.'; exit 1; fi
+  PANEL_ORIGIN="https://$LAN_IP:$PORT"
+  if command -v lockf >/dev/null; then
+    cert_lock=(lockf -k -t 20 "$CONF/panel-cert.lock")
+  else
+    cert_lock=(flock -w 20 "$CONF/panel-cert.lock")
+  fi
+  if ! "${cert_lock[@]}" bash "$DIR/server/panel-cert.sh" "$OPENSSL" "$CONF" "$RUN" "$LAN_IP"; then
+    echo 'No se pudo preparar el certificado HTTPS de Biblia.'
+    if [ -f "$RUN/cert.log" ]; then tail -4 "$RUN/cert.log"; fi
+    exit 1
+  fi
+fi
+
 HOSTS="localhost|127\\.0\\.0\\.1|\\[::1\\]"
 [ -n "$LAN_IP" ] && HOSTS="$HOSTS|${LAN_IP//./\\.}"
 HOST_PATTERN="($HOSTS):${PORT}"
@@ -203,6 +265,7 @@ load() { [ -f "$MODS/$2" ] && echo "LoadModule $1 $MODS/$2"; return 0; }
 {
 cat <<EOF
 ServerRoot "$RUN"
+DefaultRuntimeDir "$RUN"
 ServerName localhost
 Listen ${BIND}:${PORT}
 PidFile "$RUN/httpd.pid"
@@ -221,6 +284,10 @@ load alias_module mod_alias.so
 load cgi_module mod_cgi.so
 load env_module mod_env.so
 load headers_module mod_headers.so
+if [ "$PANEL_RED" = 1 ]; then
+  load ssl_module mod_ssl.so
+  echo "Listen $LAN_IP:$PORT https"
+fi
 cat <<EOF
 
 # Pocos procesos: pensado para equipos modestos (4 GB de RAM). Solo se crean los que hagan falta, pero
@@ -248,6 +315,7 @@ SetEnv EASYBIBLIA_STATE "$RUN"
 SetEnv BIBLIA_CONF "$CONF"
 SetEnv BIBLIA_OPENSSL "$OPENSSL"
 SetEnv BIBLIA_LAN_HOST "$LAN_IP"
+SetEnv BIBLIA_PANEL_ORIGIN "$PANEL_ORIGIN"
 SetEnv BIBLIA_SESSION_MIN "$SESSION_MIN"
 SetEnv BIBLIA_REMOTE_ORIGIN "$REMOTE_ORIGIN"
 SetEnv BIBLIA_REMOTE_HOST "$REMOTE_HOST"
@@ -284,9 +352,12 @@ SetEnv BIBLIA_APP_DIR "$DIR"
   Options +ExecCGI
   Require all granted
 </Directory>
+<Directory "$CONF">
+  Require all denied
+</Directory>
 # Nada interno se sirve: scripts, configuración, notas ni archivos ocultos.
 # La consola (console.html) solo se entrega con sesión, por /api/app.
-<LocationMatch "^/(server|\\.[^/]*)(/|\$)|\\.(sh|ps1|cmd|md|bak|log)\$|^/console\\.html\$">
+<LocationMatch "^/(server|\\.[^/]*)(/|\$)|\\.(sh|ps1|cmd|md|bak|log|pem|key|cer|pfx|p12)\$|^/console\\.html\$">
   Require all denied
 </LocationMatch>
 
@@ -299,6 +370,17 @@ Header always set Cross-Origin-Resource-Policy "same-origin"
 Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https://itunes.apple.com https://lrclib.net https://raw.githubusercontent.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 Header set Cache-Control "no-cache"
 EOF
+if [ "$PANEL_RED" = 1 ]; then
+  cat <<EOF
+<VirtualHost $LAN_IP:$PORT>
+  ServerName $LAN_IP:$PORT
+  SSLEngine on
+  SSLProtocol -all +TLSv1.2
+  SSLCertificateFile "$RUN/panel.pem"
+  SSLCertificateKeyFile "$RUN/panel.key"
+</VirtualHost>
+EOF
+fi
 } > "$RUN/httpd.conf"
 
 "$HTTPD" -f "$RUN/httpd.conf" -DFOREGROUND &
@@ -313,10 +395,18 @@ if ! kill -0 "$SERVER" 2>/dev/null; then
 fi
 
 URL="http://localhost:$PORT"
+OPEN_URL="$URL"
+if [ "$CHANGE_PIN" = 1 ] && [ -s "$CONF/pin" ]; then OPEN_URL="$URL/?cambiar-pin"; fi
+if [ "$PORT" != "$REQUESTED_PORT" ]; then echo "El puerto $REQUESTED_PORT está ocupado. Biblia usará el $PORT."; fi
 echo "=============================================="
 echo "  Biblia · by @jairohm.dev"
 echo "=============================================="
-echo "  App       : $URL"
+echo "  App       : $OPEN_URL"
+if [ -n "$PANEL_ORIGIN" ]; then
+  echo "  Acceso al panel con PIN: $PANEL_ORIGIN"
+  echo "  Certificado público de Biblia: $CONF/Biblia-autoridad-red.cer"
+  echo '  Agrega ese certificado como autoridad de confianza en los dispositivos que usarán el panel.'
+fi
 if [ -n "$REMOTE_ORIGIN" ]; then
   echo "  Remoto    : $REMOTE_ORIGIN (requiere PIN)"
   echo "  Túnel     : ngrok http http://127.0.0.1:$PORT --url $REMOTE_ORIGIN --inspect=false"
@@ -326,7 +416,7 @@ echo "  OBS (solo texto, fondo transparente):"
 echo "              $URL/?salida&obs&transparente"
 if [ "$RED" = 1 ] && [ -n "$LAN_IP" ]; then
   echo "  OBS en otro equipo de la red (solo ver):"
-  echo "              http://$LAN_IP:$PORT/?salida&obs&k=$VIEWER"
+  echo "              ${PANEL_ORIGIN:-http://$LAN_IP:$PORT}/?salida&obs&k=$VIEWER"
 fi
 echo "  Sesión    : se pide el PIN tras $SESSION_MIN min sin usar la consola ($((SESSION_MIN / 60)) h $((SESSION_MIN % 60)) min)"
 echo "  Ayuda     : ./serve.sh --ayuda"
@@ -334,7 +424,7 @@ echo "  Detener   : Ctrl+C"
 echo "=============================================="
 
 if [ -z "${NO_ABRIR:-}" ]; then
-  if command -v open >/dev/null; then open "$URL" 2>/dev/null || true
-  elif command -v xdg-open >/dev/null; then xdg-open "$URL" >/dev/null 2>&1 || true; fi
+  if command -v open >/dev/null; then open "$OPEN_URL" 2>/dev/null || true
+  elif command -v xdg-open >/dev/null; then xdg-open "$OPEN_URL" >/dev/null 2>&1 || true; fi
 fi
 wait "$SERVER"

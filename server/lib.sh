@@ -2,7 +2,7 @@
 # Funciones comunes de los CGI: respuestas, comprobación de origen y firmas ECDSA P-256.
 #
 # Cómo se protege el control:
-#   · Solo se acepta control desde este equipo o el túnel local autorizado (loopback).
+#   · El control entra por loopback, el túnel autorizado o el panel HTTPS de la red local.
 #   · El nombre del servidor (Host) y el origen (Origin) deben ser los de la app: frena el
 #     «DNS rebinding» y que una página web cualquiera mande órdenes al servidor.
 #   · Cada orden va firmada con la llave del equipo (ECDSA P-256, no exportable en el navegador),
@@ -30,15 +30,27 @@ is_loopback() {
   return 1
 }
 
+is_panel() {
+  [ "${HTTPS:-}" = on ] && [ -n "${BIBLIA_PANEL_ORIGIN:-}" ] && [ "https://$HTTP_HOST" = "$BIBLIA_PANEL_ORIGIN" ]
+}
+
+check_control() {
+  is_loopback || is_panel || reply '403 Forbidden' '{"error":"solo-este-equipo"}'
+}
+
 check_host() {
   # Solo se confía en el túnel que conecta por loopback; nunca en cabeceras de la LAN.
-  if [ -n "${BIBLIA_REMOTE_HOST:-}" ] && [ "$HTTP_HOST" = "$BIBLIA_REMOTE_HOST" ]; then
+  if [ "${HTTPS:-}" != on ] && [ -n "${BIBLIA_REMOTE_HOST:-}" ] && [ "$HTTP_HOST" = "$BIBLIA_REMOTE_HOST" ]; then
     is_loopback || reply '403 Forbidden' '{"error":"tunel-local"}'
     [ "${HTTP_X_FORWARDED_PROTO:-}" = https ] || reply '403 Forbidden' '{"error":"https"}'
     return 0
   fi
   # Un proxy no puede disfrazarse de acceso local reescribiendo Host.
   if [ -n "${HTTP_X_FORWARDED_FOR:-}${HTTP_X_FORWARDED_HOST:-}${HTTP_X_FORWARDED_PROTO:-}${HTTP_FORWARDED:-}" ]; then
+    reply '421 Misdirected Request' '{"error":"host"}'
+  fi
+  if [ "${HTTPS:-}" = on ]; then
+    is_panel && return 0
     reply '421 Misdirected Request' '{"error":"host"}'
   fi
   case "$HTTP_HOST" in
@@ -49,6 +61,10 @@ check_host() {
 }
 
 check_origin() {
+  if is_panel; then
+    [ "${HTTP_ORIGIN:-}" = "$BIBLIA_PANEL_ORIGIN" ] && return 0
+    reply '403 Forbidden' '{"error":"origen"}'
+  fi
   if [ -n "${BIBLIA_REMOTE_HOST:-}" ] && [ "$HTTP_HOST" = "$BIBLIA_REMOTE_HOST" ]; then
     [ "${HTTP_ORIGIN:-}" = "$BIBLIA_REMOTE_ORIGIN" ] && return 0
     reply '403 Forbidden' '{"error":"origen"}'

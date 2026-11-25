@@ -1,6 +1,6 @@
 #!/bin/sh
 # Imágenes, videos y audios para OBS.
-#   POST /api/media?id=X   (firmada, solo este equipo) guarda el archivo enviado por la consola.
+#   POST /api/media?id=X   (firmada) guarda el archivo enviado por la consola.
 #   GET  /api/media?id=X   lo sirve. Desde otro equipo de la red hace falta la llave de visor (&k=…).
 # Solo se aceptan tipos de imagen, video y audio: un archivo nunca se sirve como página web.
 . "$(dirname "$0")/lib.sh"
@@ -12,7 +12,7 @@ id=$(printf '&%s' "$QUERY_STRING" | sed -n 's/.*&id=\([A-Za-z0-9-]\{1,64\}\).*/\
 [ -n "$id" ] || reply '400 Bad Request' '{"error":"id"}'
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
-  is_loopback || reply '403 Forbidden' '{"error":"solo-este-equipo"}'
+  check_control
   check_origin
   type=$(printf '%s' "${CONTENT_TYPE:-}" | tr 'A-Z' 'a-z' | sed 's/;.*//')
   case "$type" in

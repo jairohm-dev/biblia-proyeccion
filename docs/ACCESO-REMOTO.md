@@ -1,12 +1,12 @@
 # Controlar Biblia desde otro dispositivo
 
-Este modo corresponde al servidor web (`serve.sh` o `serve.ps1`). La app de escritorio
-mantiene su funcionamiento actual; su servidor para OBS solo permite ver.
+El control por IP usa el servidor web (`serve.sh` o `iniciar-windows.cmd`). Desde la app de
+escritorio puedes compartir la proyección con OBS.
 
-## Por IP en la misma red (Windows)
+## Por IP en la misma red
 
-1. Abre `iniciar-windows.cmd` y elige **Iniciar con acceso al panel por IP (HTTPS)**.
-   La PC que ejecuta Biblia y el otro dispositivo deben estar en la misma red.
+1. En Mac, ejecuta `./serve.sh` en Terminal. En Windows, abre `iniciar-windows.cmd`.
+   Elige **Iniciar con acceso al panel por IP (HTTPS)** mientras ambos dispositivos están en la misma red.
 2. Si es la primera vez que usas Biblia, crea el PIN en el navegador de la PC que ejecuta el servidor.
 3. Copia `Biblia-autoridad-red.cer` desde la ruta que muestra la terminal y agrégalo como
    autoridad raíz de confianza en cada dispositivo que vaya a controlar el panel. Transfiere el
@@ -16,11 +16,15 @@ mantiene su funcionamiento actual; su servidor para OBS solo permite ver.
    e introduce el PIN. La terminal también muestra el enlace, por ejemplo `https://192.168.1.25:3737`.
 
 `localhost`, el panel por IP y OBS usan el mismo puerto. Si el 3737 está ocupado, los tres usan
-el siguiente disponible. Al abrir la IP por HTTP, Biblia te lleva a HTTPS en ese mismo puerto.
+el siguiente disponible. En Windows, al abrir la IP por HTTP, Biblia te lleva a HTTPS en ese mismo puerto.
 El enlace del visor se copia desde **OBS**.
+Con el panel por IP activo en Mac, el visor de red también usa HTTPS y el mismo certificado.
 Reinicia Biblia con la misma opción para volver a habilitar el panel por IP.
 
-También puedes iniciar directamente con `iniciar-windows.cmd -PanelRed`. Usa `-Puerto`
+En Mac puedes iniciar directamente con `./serve.sh --panel-red`. Para un puerto fijo añade el número,
+por ejemplo `./serve.sh --panel-red 4000`.
+
+En Windows puedes usar `iniciar-windows.cmd -PanelRed`. Usa `-Puerto`
 para elegir un puerto fijo y `-CertificadoPanel` si ya tienes un archivo PFX vigente
 que cubra las IP del equipo y cuya autoridad sea de confianza en los dispositivos.
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# PIN y equipos autorizados. Solo responde a este mismo equipo.
+# PIN y equipos autorizados.
 #   GET  /api/auth?accion=estado       ¿hay PIN? y la sal para derivarlo
 #   POST /api/auth?accion=crear        primer PIN + llave del equipo          {salt, verifier, pub}
 #   POST /api/auth?accion=entrar       PIN + llave del equipo                 {verifier, pub}
@@ -16,7 +16,7 @@
 . "$(dirname "$0")/lib.sh"
 
 check_host
-is_loopback || reply '403 Forbidden' '{"error":"solo-este-equipo"}'
+check_control
 
 PINFILE="$CONF/pin"
 FAILS="$RUN/fails"
@@ -52,10 +52,16 @@ note_failure() {
 case "$REQUEST_METHOD:$action" in
   GET:estado)
     if [ -s "$PINFILE" ]; then reply '200 OK' "{\"configured\":true,\"salt\":\"$(stored_salt)\",\"name\":\"$(church_name)\",\"install\":\"$(install_id)\"}"
-    else reply '200 OK' "{\"configured\":false,\"install\":\"$(install_id)\"}"; fi ;;
+    else
+      registro_local=false
+      if is_panel; then registro_local=true; fi
+      reply '200 OK' "{\"configured\":false,\"install\":\"$(install_id)\",\"registroLocal\":$registro_local}"
+    fi ;;
 
   POST:crear)
-    [ "$HTTP_HOST" != "${BIBLIA_REMOTE_HOST:-}" ] || reply '403 Forbidden' '{"error":"registro-local"}'
+    if is_panel || [ "$HTTP_HOST" = "${BIBLIA_REMOTE_HOST:-}" ]; then
+      reply '403 Forbidden' '{"error":"registro-local"}'
+    fi
     check_origin
     read_body 4096
     salt=$(json_field salt); ver=$(json_field verifier); pub=$(json_field pub); name=$(json_field name)
@@ -92,10 +98,13 @@ case "$REQUEST_METHOD:$action" in
     read_body 64
     verify_signature
     lan_urls='[]'
+    panel_urls='[]'
     if [ -n "${BIBLIA_LAN_HOST:-}" ] && [ "$HTTP_HOST" != "${BIBLIA_REMOTE_HOST:-}" ]; then
-      lan_urls="[\"http://$BIBLIA_LAN_HOST:$SERVER_PORT\"]"
+      lan_origin="${BIBLIA_PANEL_ORIGIN:-http://$BIBLIA_LAN_HOST:$SERVER_PORT}"
+      lan_urls="[\"$lan_origin\"]"
+      if [ -n "${BIBLIA_PANEL_ORIGIN:-}" ]; then panel_urls=$lan_urls; fi
     fi
-    reply '200 OK' "{\"ok\":true,\"viewer\":\"$(cat "$CONF/viewer.key")\",\"lanUrls\":$lan_urls}" ;;
+    reply '200 OK' "{\"ok\":true,\"viewer\":\"$(cat "$CONF/viewer.key")\",\"lanUrls\":$lan_urls,\"panelUrls\":$panel_urls}" ;;
 
   POST:salir)
     check_origin

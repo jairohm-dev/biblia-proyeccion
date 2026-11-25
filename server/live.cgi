@@ -1,6 +1,6 @@
 #!/bin/sh
 # Estado «En vivo» compartido entre la consola y OBS.
-#   POST /api/live          (firmada, solo este equipo) guarda el estado y sube la revisión.
+#   POST /api/live          (firmada) guarda el estado y sube la revisión.
 #   GET  /api/live?rev=N    espera hasta 20 s a que la revisión cambie y la devuelve.
 #                           Desde otro equipo de la red hace falta la llave de visor (&k=…).
 . "$(dirname "$0")/lib.sh"
@@ -11,7 +11,7 @@ rev="$RUN/live.rev"
 [ -f "$rev" ] || echo 0 > "$rev"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
-  is_loopback || reply '403 Forbidden' '{"error":"solo-este-equipo"}'
+  check_control
   check_origin
   # Lleva la imagen de fondo en base64: una foto de 1920 px puede pesar varios MB.
   read_body 16777216

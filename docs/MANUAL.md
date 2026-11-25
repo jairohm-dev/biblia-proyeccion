@@ -120,7 +120,8 @@ aparece en OBS al momento. Requiere abrir la app con el servidor (`./serve.sh` o
 `iniciar-windows.cmd`). Para compartir la proyección con **otro equipo de la misma red**, abre
 **OBS → Ver en otro dispositivo** y copia el enlace. Puedes abrirlo en un navegador o pegarlo
 en OBS. En Windows, `iniciar-windows.cmd` habilita el visor al arrancar. En macOS y Linux,
-arranca con `./serve.sh --red`.
+elige **Compartir proyección en la red (OBS)** en el menú de `./serve.sh` o arranca con
+`./serve.sh --red`.
 
 Si la conexión con el servidor falla, OBS y el proyector se quedan en lo último que recibieron y se
 reconectan solos. La consola avisa y reenvía lo más reciente en cuanto vuelve la conexión; solo pide el

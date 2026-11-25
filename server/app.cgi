@@ -1,11 +1,11 @@
 #!/bin/sh
 # La consola (su HTML) solo se entrega a un equipo que entró con el PIN: sin sesión no hay nada que
 # desocultar desde el inspector del navegador.
-#   POST /api/app   (firmada, solo este equipo) → console.html
+#   POST /api/app   (firmada) → console.html
 . "$(dirname "$0")/lib.sh"
 
 check_host
-is_loopback || reply '403 Forbidden' '{"error":"solo-este-equipo"}'
+check_control
 [ "$REQUEST_METHOD" = "POST" ] || reply '405 Method Not Allowed' '{"error":"metodo"}'
 check_origin
 read_body 64

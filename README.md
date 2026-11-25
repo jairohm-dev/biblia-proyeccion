@@ -57,8 +57,11 @@ Sin Node, sin Python, sin instalar nada: usa lo que ya trae el sistema.
 ```bash
 git clone https://github.com/jairohm-dev/biblia-proyeccion.git
 cd biblia-proyeccion
-./serve.sh            # macOS / Linux → http://localhost:3737
+./serve.sh            # menú de inicio en macOS / Linux
 ```
+
+En **Mac**, elige **Iniciar con acceso al panel por IP (HTTPS)** si quieres controlar Biblia
+desde otro dispositivo. En la consola, abre **Acceso al panel → Copiar**.
 
 En **Windows**, haz doble clic en `iniciar-windows.cmd` y elige **Iniciar Biblia**.
 Se abre el navegador en `http://localhost:3737` o en el siguiente puerto disponible.
@@ -71,6 +74,7 @@ En **OBS → Ver en otro dispositivo** puedes copiar el enlace para ver la proye
 ```bash
 ./serve.sh 4000               # otro puerto
 ./serve.sh --red              # OBS en otro equipo de la red (solo puede ver)
+./serve.sh --panel-red        # panel con PIN por HTTPS en la misma red
 ./serve.sh --restablecer-pin  # si olvidaste el PIN
 ./serve.sh --reiniciar        # todo desde cero (pide escribir BORRAR)
 ./serve.sh --ayuda            # todas las opciones
@@ -83,7 +87,7 @@ En macOS usa el Apache del sistema; en Linux, el de la distribución (`sudo apt 
 </details>
 
 La versión web permite controlar el panel desde otro dispositivo con HTTPS y el PIN de Biblia.
-Consulta la [guía de acceso por IP en Windows y por ngrok](docs/ACCESO-REMOTO.md).
+Consulta la [guía de acceso por IP y por ngrok](docs/ACCESO-REMOTO.md).
 
 ### Uso básico
 
