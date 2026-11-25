@@ -16,7 +16,7 @@
   - Tras 5 PIN equivocados hay que esperar, cada vez más.
 
 .PARAMETER Puerto
-  Puerto fijo (entre 1024 y 65535). Si se omite, usa 3737 o el siguiente puerto disponible.
+  Puerto fijo para la app, el panel HTTPS y el visor. Si se omite, usa 3737 o el siguiente disponible.
 .PARAMETER SesionMin
   Minutos sin usar la consola tras los que se vuelve a pedir el PIN. Por defecto 720 (12 horas).
 .PARAMETER Red
@@ -55,7 +55,7 @@ param(
   [switch]$SoloLocal,
   [switch]$Menu,
   [switch]$PanelRed,
-  [int]$PuertoPanel = 3743,
+  [int]$PuertoPanel,
   [string]$CertificadoPanel
 )
 
@@ -74,10 +74,9 @@ OPCIONES
                     o en el siguiente puerto disponible.
   -Menu             Abre el menú de inicio.
   -PanelRed         Habilita el panel con PIN por HTTPS en las IP de este equipo.
-  -PuertoPanel 3743 Puerto HTTPS para el panel en red.
   -CertificadoPanel Ruta de un certificado PFX para las IP del panel.
                     Introduce su contraseña cuando el programa la solicite.
-  -Puerto 4000      Usa un puerto fijo (entre 1024 y 65535).
+  -Puerto 4000      Usa un puerto fijo para la app, el panel HTTPS y el visor.
   -SesionMin 30     Minutos sin usar la consola antes de volver a pedir el PIN
                     (por defecto 720 = 12 horas).
   -Red              Habilita el visor en la red local al ejecutar serve.ps1 directamente.
@@ -109,8 +108,6 @@ DETENER
 }
 
 if ($Ayuda) { Show-Ayuda; exit 0 }
-if ($Puerto -lt 1024 -or $Puerto -gt 65535) { Write-Host "Puerto inválido: $Puerto (usa uno entre 1024 y 65535)"; exit 1 }
-
 $changePinOnStart = $false
 if ($Menu -or ($PSBoundParameters.Count -eq 0 -and -not [Console]::IsInputRedirected -and -not $OrigenRemoto)) {
   while ($true) {
@@ -136,8 +133,14 @@ if ($PanelRed -and $SoloLocal) {
 }
 if ($PanelRed) { $Red = $true }
 if ($SoloLocal) { $Red = $false }
-if ($PanelRed -and ($PuertoPanel -lt 1024 -or $PuertoPanel -gt 65535)) {
-  Write-Host "Puerto HTTPS inválido: $PuertoPanel (usa uno entre 1024 y 65535)"
+# Compatibilidad con los comandos anteriores que fijaban solo el puerto del panel.
+$fixedPort = $PSBoundParameters.ContainsKey('Puerto')
+if ($PanelRed -and -not $fixedPort -and $PSBoundParameters.ContainsKey('PuertoPanel')) {
+  $Puerto = $PuertoPanel
+  $fixedPort = $true
+}
+if ($Puerto -lt 1024 -or $Puerto -gt 65535) {
+  Write-Host "Puerto inválido: $Puerto (usa uno entre 1024 y 65535)"
   exit 1
 }
 
@@ -600,10 +603,9 @@ function Invoke-Request($c) {
   }
   # El modo local solo acepta conexiones de loopback.
   if (-not $Red -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
-  if ($PanelRed -and $c.Method -eq 'GET' -and $c.Path -eq '/' -and -not $c.Query -and
+  if ($PanelRed -and -not $c.Panel -and $c.Method -eq 'GET' -and $c.Path -eq '/' -and -not $c.Query -and
       $LanUrls -contains "http://$($c.Headers['host'])") {
-    $ip = $c.Headers['host'].Split(':')[0]
-    Send-Bytes $c 302 'Found' @{ Location = "https://${ip}:$PuertoPanel/"; 'Cache-Control' = 'no-store' } (New-Object byte[] 0)
+    Send-Bytes $c 302 'Found' @{ Location = "https://$($c.Headers['host'])/"; 'Cache-Control' = 'no-store' } (New-Object byte[] 0)
     return
   }
   switch ($c.Path) {
@@ -681,13 +683,35 @@ function Read-Conn($c, [int]$size) {
   return $count
 }
 
+$protocolByte = New-Object byte[] 1
+
 function Step-Conn($c) {
   $did = $false
   switch ($c.Phase) {
+    'protocol' {
+      $socket = $c.Client.Client
+      if ($socket.Poll(0, [Net.Sockets.SelectMode]::SelectRead)) {
+        if ($socket.Receive($protocolByte, 0, 1, [Net.Sockets.SocketFlags]::Peek) -eq 0) {
+          Close-Conn $c
+          return $true
+        }
+        $c.Phase = 'head'
+        # El primer registro TLS es un handshake. Peek deja el byte disponible para SslStream.
+        if ($protocolByte[0] -eq 0x16) {
+          $c.Stream = [Net.Security.SslStream]::new($c.Stream, $false)
+          $c.Handshake = $c.Stream.AuthenticateAsServerAsync($panelCertificate.Cert, $false,
+            [Security.Authentication.SslProtocols]::Tls12, $false)
+          $c.Phase = 'tls'
+        }
+        $c.Since = [DateTime]::UtcNow
+        $did = $true
+      } elseif (([DateTime]::UtcNow - $c.Since).TotalSeconds -gt 10) { Close-Conn $c }
+    }
     'tls' {
       if ($c.Handshake.IsCompleted) {
         [void]$c.Handshake.GetAwaiter().GetResult()
         $c.Handshake = $null
+        $c.Panel = $true
         $c.Phase = 'head'
         $c.Since = [DateTime]::UtcNow
         $did = $true
@@ -731,8 +755,7 @@ function Step-Conn($c) {
 }
 
 # ───────────── Arranque ─────────────
-# ───────────── Arranque ─────────────
-function Open-Listeners([Net.IPAddress[]]$addresses, [int]$firstPort, [bool]$fixedPort, [string]$option) {
+function Open-Listeners([Net.IPAddress[]]$addresses, [int]$firstPort, [bool]$fixedPort) {
   $lastPort = 65535
   if ($fixedPort) { $lastPort = $firstPort }
   for ($port = $firstPort; $port -le $lastPort; $port++) {
@@ -752,7 +775,7 @@ function Open-Listeners([Net.IPAddress[]]$addresses, [int]$firstPort, [bool]$fix
       if ($cause -isnot [Net.Sockets.SocketException] -or $cause.SocketErrorCode -notin 'AddressAlreadyInUse', 'AccessDenied') { throw }
     }
   }
-  throw "No se pudo abrir un puerto a partir del $firstPort. Indica uno disponible con $option."
+  throw "No se pudo abrir un puerto a partir del $firstPort. Indica uno disponible con -Puerto."
 }
 
 $requestedPort = $Puerto
@@ -763,7 +786,6 @@ $bindAddresses = @($bindAddr)
 if ([Net.Sockets.Socket]::OSSupportsIPv6) { $bindAddresses += [Net.IPAddress]::IPv6Loopback }
 
 $listeners = @()
-$panelListeners = @()
 $PanelHosts = @()
 $PanelUrls = @()
 $panelCertificate = $null
@@ -773,22 +795,18 @@ try {
     throw 'Conecta esta PC a la red para habilitar el acceso al panel por IP.'
   }
 
-  $http = Open-Listeners $bindAddresses $Puerto ($PSBoundParameters.ContainsKey('Puerto')) '-Puerto'
-  $Puerto = $http.Port
-  $listeners += $http.Listeners
+  $binding = Open-Listeners $bindAddresses $Puerto $fixedPort
+  $Puerto = $binding.Port
+  $listeners = $binding.Listeners
   $Url = "http://localhost:$Puerto"
-  $LanUrls = @($LanIps | ForEach-Object { "http://${_}:$Puerto" })
-  $AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + @($LanIps | ForEach-Object { "${_}:$Puerto" })
+  $lanHosts = @($LanIps | ForEach-Object { "${_}:$Puerto" })
+  $LanUrls = @($lanHosts | ForEach-Object { "http://$_" })
+  $AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + $lanHosts
   $AllowedOrigins = @($Url, "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
   if ($RemoteHost) { $AllowedHosts += $RemoteHost }
 
   if ($PanelRed) {
-    $panelAddresses = @($LanIps | ForEach-Object { [Net.IPAddress]::Parse($_) })
-    $https = Open-Listeners $panelAddresses $PuertoPanel ($PSBoundParameters.ContainsKey('PuertoPanel')) '-PuertoPanel'
-    $PuertoPanel = $https.Port
-    $panelListeners = $https.Listeners
-    $listeners += $panelListeners
-    $PanelHosts = @($LanIps | ForEach-Object { "${_}:$PuertoPanel" })
+    $PanelHosts = $lanHosts
     $PanelUrls = @($PanelHosts | ForEach-Object { "https://$_" })
     . (Join-Path $Root 'server/panel-cert.ps1')
     $panelCertificate = Get-PanelCertificate $LanIps $Conf $CertificadoPanel
@@ -832,19 +850,13 @@ try {
         $client = $l.AcceptTcpClient()
         $client.NoDelay = $true
         $client.SendTimeout = 15000
+        $phase = 'head'
+        if ($PanelRed -and $LanIps -contains $client.Client.LocalEndPoint.Address.ToString()) { $phase = 'protocol' }
         $c = @{
-          Client = $client; Stream = $client.GetStream(); Head = New-Object IO.MemoryStream; Phase = 'head'; Since = [DateTime]::UtcNow
+          Client = $client; Stream = $client.GetStream(); Head = New-Object IO.MemoryStream; Phase = $phase; Since = [DateTime]::UtcNow
           Method = ''; Target = ''; Path = ''; Query = ''; Headers = @{}; Remaining = 0; Hasher = $null; BodyMem = $null
           BodyFile = $null; BodyPath = $null; BodyText = ''; BodyHash = ''; File = $null; WaitRev = 0; Deadline = [DateTime]::MinValue
-          Panel = $panelListeners -contains $l; Handshake = $null; ReadTask = $null; ReadBuffer = $null
-        }
-        if ($c.Panel) {
-          try {
-            $c.Stream = [Net.Security.SslStream]::new($c.Stream, $false)
-            $c.Handshake = $c.Stream.AuthenticateAsServerAsync($panelCertificate.Cert, $false,
-              [Security.Authentication.SslProtocols]::Tls12, $false)
-            $c.Phase = 'tls'
-          } catch { Close-Conn $c; continue }
+          Panel = $false; Handshake = $null; ReadTask = $null; ReadBuffer = $null
         }
         [void]$conns.Add($c)
         $busy = $true

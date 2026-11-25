@@ -13,14 +13,15 @@ mantiene su funcionamiento actual; su servidor para OBS solo permite ver.
    certificado público directamente desde la PC de Biblia. En iPhone o iPad, habilita también
    la confianza SSL/TLS para el certificado. [Guía de Apple](https://support.apple.com/en-ie/102390)
 4. En Biblia, pulsa **Acceso al panel → Copiar**. Abre ese enlace en el otro dispositivo
-   e introduce el PIN. La terminal también muestra el enlace, por ejemplo `https://192.168.1.25:3743`.
+   e introduce el PIN. La terminal también muestra el enlace, por ejemplo `https://192.168.1.25:3737`.
 
-El enlace de OBS se copia desde **OBS**. El panel usa su propio puerto HTTPS y publica los cambios
-en la misma proyección. Si abres la IP con el puerto web, Biblia te lleva al enlace HTTPS.
+`localhost`, el panel por IP y OBS usan el mismo puerto. Si el 3737 está ocupado, los tres usan
+el siguiente disponible. Al abrir la IP por HTTP, Biblia te lleva a HTTPS en ese mismo puerto.
+El enlace del visor se copia desde **OBS**.
 Reinicia Biblia con la misma opción para volver a habilitar el panel por IP.
 
-También puedes iniciar directamente con `iniciar-windows.cmd -PanelRed`. Usa `-PuertoPanel`
-para elegir un puerto HTTPS fijo y `-CertificadoPanel` si ya tienes un archivo PFX vigente
+También puedes iniciar directamente con `iniciar-windows.cmd -PanelRed`. Usa `-Puerto`
+para elegir un puerto fijo y `-CertificadoPanel` si ya tienes un archivo PFX vigente
 que cubra las IP del equipo y cuya autoridad sea de confianza en los dispositivos.
 
 ## Por ngrok
