@@ -17,7 +17,7 @@ const PBKDF2_ROUNDS = 210000;
 const DESKTOP = !!window.__TAURI__?.core;
 const tauri = (cmd, args, opts) => window.__TAURI__.core.invoke(cmd, args, opts);
 const INSTALL_KEY = 'biblia.instalacion';
-const auth = { mode: 'none', device: null, viewer: '', salt: '', configured: false, name: '', onUnlock: null };
+const auth = { mode: 'none', device: null, viewer: '', lanUrls: [], salt: '', configured: false, name: '', onUnlock: null };
 
 const hexOf = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 const b64Of = (bytes) => btoa(String.fromCharCode(...bytes));
@@ -154,7 +154,9 @@ async function checkSession(keep = false) {
     const res = await signedFetch(`api/auth?accion=${keep ? 'mantener' : 'comprobar'}`, { timeout: 10000 });
     if (res.status === 401) return false;
     if (!res.ok) return null;
-    auth.viewer = (await res.json()).viewer || '';
+    const session = await res.json();
+    auth.viewer = session.viewer || '';
+    auth.lanUrls = Array.isArray(session.lanUrls) ? session.lanUrls : [];
     return true;
   } catch {
     return null;

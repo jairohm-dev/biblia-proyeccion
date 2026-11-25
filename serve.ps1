@@ -4,25 +4,25 @@
 
 .DESCRIPTION
   Haz doble clic en «iniciar-windows.cmd» para abrir la app en el navegador.
-  Usa http://localhost:3737 o el siguiente puerto disponible.
+  Usa http://localhost:3737 o el siguiente puerto disponible y habilita el visor en la red local.
 
   SEGURIDAD
-  - Por defecto solo escucha en este equipo: un escaneo de la red no encuentra el puerto.
+  - La llave del enlace da acceso de solo lectura a la proyección en la red local.
   - La consola pide un PIN cada vez que se enciende el servidor o tras 12 horas sin usarla. Si la sesión
     se cierra, lo que está en vivo sigue en pantalla y en OBS. El PIN no viaja ni se guarda tal cual:
     el navegador lo deriva (PBKDF2) y aquí solo queda un resumen.
   - Cada orden lleva la firma de la llave del navegador (ECDSA P-256, no se puede exportar ni copiar):
     una petición capturada no sirve para repetirla ni para cambiarla.
   - Tras 5 PIN equivocados hay que esperar, cada vez más.
-  - Con -Red, otro equipo de la red solo puede VER la salida para OBS (con la llave de visor);
-    el control sigue siendo solo de este equipo.
 
 .PARAMETER Puerto
   Puerto fijo (entre 1024 y 65535). Si se omite, usa 3737 o el siguiente puerto disponible.
 .PARAMETER SesionMin
   Minutos sin usar la consola tras los que se vuelve a pedir el PIN. Por defecto 720 (12 horas).
 .PARAMETER Red
-  Deja que otro equipo de la red vea la salida para OBS.
+  Habilita el visor en la red local. Es el valor por defecto de iniciar-windows.cmd.
+.PARAMETER SoloLocal
+  Limita el acceso al equipo que ejecuta el servidor.
 .PARAMETER RestablecerPin
   Borra el PIN si lo olvidaste. Al abrir la app pedirá uno nuevo.
 .PARAMETER Reiniciar
@@ -46,12 +46,13 @@
 param(
   [int]$Puerto = 3737,
   [int]$SesionMin = 720,
-  [switch]$Red,
+  [switch]$Red = ($env:BIBLIA_RED -eq '1'),
   [string]$OrigenRemoto = $env:BIBLIA_ORIGEN_REMOTO,
   [switch]$RestablecerPin,
   [Alias('Reset', 'BorrarTodo')][switch]$Reiniciar,
   [switch]$NoAbrir,
-  [Alias('h', 'help')][switch]$Ayuda
+  [Alias('h', 'help')][switch]$Ayuda,
+  [switch]$SoloLocal
 )
 
 Set-StrictMode -Version 2
@@ -65,14 +66,13 @@ USO
   iniciar-windows.cmd [opciones]      (o: powershell -File serve.ps1 [opciones])
 
 OPCIONES
-  (sin nada)        Abre la app en http://localhost:3737, solo en este equipo.
-                    Si el puerto está ocupado, usa el siguiente disponible.
+  (sin nada)        Abre la app en http://localhost:3737 o el siguiente puerto disponible.
+                    iniciar-windows.cmd habilita el visor en la red local.
   -Puerto 4000      Usa un puerto fijo (entre 1024 y 65535).
   -SesionMin 30     Minutos sin usar la consola antes de volver a pedir el PIN
                     (por defecto 720 = 12 horas).
-  -Red              Deja que otro equipo de la red vea la salida para OBS.
-                    Desde la red solo se puede VER (con la llave de visor que se
-                    muestra al arrancar); el control sigue siendo solo de este equipo.
+  -Red              Habilita el visor en la red local al ejecutar serve.ps1 directamente.
+  -SoloLocal        Limita el acceso al equipo que ejecuta el servidor.
   -OrigenRemoto https://tu-dominio.ngrok-free.app
                     Autoriza ese dominio HTTPS por un túnel local; requiere PIN previo.
   -RestablecerPin   Borra el PIN si lo olvidaste. Al abrir la app pedirá uno nuevo.
@@ -84,7 +84,7 @@ OPCIONES
   -Ayuda            Muestra esta ayuda.
 
 SEGURIDAD
-  - Por defecto el servidor solo escucha en este equipo: un escaneo de la red no lo ve.
+  - La llave del enlace da acceso de solo lectura a la proyección en la red local.
   - La consola no se entrega sin PIN: antes de entrar solo existe la portada.
   - La consola pide un PIN cada vez que se enciende el servidor o tras 12 horas sin usarla.
     Si la sesión se cierra, lo que está en vivo sigue en pantalla y en OBS; al volver a
@@ -101,6 +101,8 @@ DETENER
 
 if ($Ayuda) { Show-Ayuda; exit 0 }
 if ($Puerto -lt 1024 -or $Puerto -gt 65535) { Write-Host "Puerto inválido: $Puerto (usa uno entre 1024 y 65535)"; exit 1 }
+
+if ($SoloLocal) { $Red = $false }
 
 $RemoteHost = ''
 if ($OrigenRemoto) {
@@ -226,9 +228,13 @@ $script:FailUntil = [DateTime]::MinValue
 $LanIps = @()
 if ($Red) {
   try {
-    $LanIps = @([Net.Dns]::GetHostAddresses([Net.Dns]::GetHostName()) |
+    $LanIps = @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+      Where-Object { $_.OperationalStatus -eq 'Up' } |
+      ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+      ForEach-Object { $_.Address } |
       Where-Object { $_.AddressFamily -eq 'InterNetwork' -and -not [Net.IPAddress]::IsLoopback($_) } |
-      ForEach-Object { $_.ToString() })
+      ForEach-Object { $_.ToString() } |
+      Select-Object -Unique)
   } catch { $LanIps = @() }
 }
 
@@ -422,7 +428,9 @@ function Invoke-Auth($c) {
     { $_ -in 'comprobar', 'mantener' } {
       $why = Test-Signature $c
       if ($why) { Send-Json $c 401 'Unauthorized' ('{"error":"' + $why + '"}'); return }
-      Send-Json $c 200 'OK' ('{"ok":true,"viewer":"' + $Viewer + '"}')
+      $session = @{ ok = $true; viewer = $Viewer; lanUrls = @() }
+      if (-not (Test-Remote $c)) { $session.lanUrls = $LanUrls }
+      Send-Json $c 200 'OK' (ConvertTo-Json -Compress -InputObject $session)
     }
     'salir' {
       $why = Test-Signature $c
@@ -543,7 +551,7 @@ function Invoke-Request($c) {
   } elseif ($c.Headers['x-forwarded-for'] -or $c.Headers['x-forwarded-host'] -or $c.Headers['x-forwarded-proto'] -or $c.Headers['forwarded']) {
     Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return
   }
-  # Sin -Red, nada de otros equipos (el puerto ni siquiera escucha en la red, pero por si acaso).
+  # El modo local solo acepta conexiones de loopback.
   if (-not $Red -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
   switch ($c.Path) {
     '/api/auth' { Invoke-Auth $c }
@@ -685,6 +693,7 @@ while ($true) {
 }
 
 $Url = "http://localhost:$Puerto"
+$LanUrls = @($LanIps | ForEach-Object { "http://${_}:$Puerto" })
 $AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + @($LanIps | ForEach-Object { "${_}:$Puerto" })
 $AllowedOrigins = @($Url, "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
 if ($RemoteHost) { $AllowedHosts += $RemoteHost }
@@ -702,7 +711,7 @@ Write-Host "  OBS       : $Url/?salida&obs"
 Write-Host '  OBS (solo texto, fondo transparente):'
 Write-Host "              $Url/?salida&obs&transparente"
 if ($Red) {
-  foreach ($ip in $LanIps) { Write-Host "  OBS en otro equipo de la red (solo ver):`n              http://${ip}:$Puerto/?salida&obs&k=$Viewer" }
+  foreach ($base in $LanUrls) { Write-Host "  Ver en otro dispositivo de la red:`n              $base/?salida&obs&k=$Viewer" }
   Write-Host '  Si Windows pregunta por el firewall, permite el acceso solo en redes PRIVADAS.'
 }
 Write-Host "  Sesión    : se pide el PIN tras $SesionMin min sin usar la consola"

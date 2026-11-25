@@ -91,7 +91,11 @@ case "$REQUEST_METHOD:$action" in
     check_origin
     read_body 64
     verify_signature
-    reply '200 OK' "{\"ok\":true,\"viewer\":\"$(cat "$CONF/viewer.key")\"}" ;;
+    lan_urls='[]'
+    if [ -n "${BIBLIA_LAN_HOST:-}" ] && [ "$HTTP_HOST" != "${BIBLIA_REMOTE_HOST:-}" ]; then
+      lan_urls="[\"http://$BIBLIA_LAN_HOST:$SERVER_PORT\"]"
+    fi
+    reply '200 OK' "{\"ok\":true,\"viewer\":\"$(cat "$CONF/viewer.key")\",\"lanUrls\":$lan_urls}" ;;
 
   POST:salir)
     check_origin

@@ -117,8 +117,10 @@ Hay dos enlaces:
 En OBS: Fuentes → + → Navegador, pega el enlace y pon el tamaño de tu formato (Apariencia →
 Pantalla): 16:9 → 1920 × 1080, 16:10 → 1920 × 1200, 4:3 → 1440 × 1080. El diálogo de OBS lo indica solo. Lo que pongas En vivo
 aparece en OBS al momento. Requiere abrir la app con el servidor (`./serve.sh` o
-`iniciar-windows.cmd`). Para OBS en **otro equipo**, arranca con `--red` (Windows: `-Red`) y usa el
-enlace con `&k=…` que aparece al arrancar.
+`iniciar-windows.cmd`). Para compartir la proyección con **otro equipo de la misma red**, abre
+**OBS → Ver en otro dispositivo** y copia el enlace. Puedes abrirlo en un navegador o pegarlo
+en OBS. En Windows, `iniciar-windows.cmd` habilita el visor al arrancar. En macOS y Linux,
+arranca con `./serve.sh --red`.
 
 Si la conexión con el servidor falla, OBS y el proyector se quedan en lo último que recibieron y se
 reconectan solos. La consola avisa y reenvía lo más reciente en cuanto vuelve la conexión; solo pide el

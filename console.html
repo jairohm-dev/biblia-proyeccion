@@ -551,6 +551,11 @@
           <label class="switch-row compact"><span>Permitir OBS en otro equipo de la red<small>Solo para ver, con la llave del enlace.</small></span>
             <span class="switch"><input type="checkbox" id="obsLan" role="switch"></span></label>
         </div>
+        <div class="obs-link" id="obsLanShare" hidden>
+          <div class="obs-name">Ver en otro dispositivo</div>
+          <div class="obs-sub">Abre el enlace en un celular o computadora de la misma red.</div>
+          <div id="obsLanLinks"></div>
+        </div>
         <ol class="obs-steps">
           <li>En OBS, en <strong>Fuentes</strong>, pulsa <strong>+</strong> y elige <strong>Navegador</strong>.</li>
           <li>Pega uno de estos enlaces en <strong>URL</strong> y pon ancho <strong id="obsWidth">1920</strong> y alto <strong id="obsHeight">1080</strong> <span class="obs-format">(formato <span id="obsRatio">16:9</span>, el de Apariencia → Pantalla)</span>.</li>

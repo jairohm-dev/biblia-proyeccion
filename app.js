@@ -645,6 +645,7 @@ async function detectServer() {
   } catch {
     serverLive = false;
   }
+  $('#obsWarn').hidden = serverLive;
   if (serverLive) postLive();
 }
 
@@ -3453,7 +3454,7 @@ async function refreshObsDesktop() {
   $('#obsSwitch').checked = state.obsOn;
   $('#obsLan').disabled = !state.obsOn;
   $('#obsLan').checked = !!st.lan;
-  $$('#obsDialog .obs-link, #obsDialog .obs-steps').forEach((el) => { el.hidden = !state.obsOn; });
+  $$('#obsDialog .obs-link:not(#obsLanShare), #obsDialog .obs-steps').forEach((el) => { el.hidden = !state.obsOn; });
   if (!state.obsOn) return;
   // Con «en la red», los enlaces usan la IP de este equipo y la llave de visor; si no, localhost.
   const base = st.lan ? `${st.lan}/?salida&obs&k=${st.viewer}` : `${st.url}/?salida&obs`;
@@ -3471,6 +3472,19 @@ async function setObsDesktop(on, lan) {
   refreshObsDesktop();
 }
 
+function renderObsLanLinks() {
+  const urls = auth.viewer ? auth.lanUrls : [];
+  $('#obsLanLinks').innerHTML = urls.map((base, index) => {
+    const id = `obsLanLink${index}`;
+    const link = `${base}/?salida&obs&k=${auth.viewer}`;
+    return `<div class="copy-row">
+      <input id="${id}" readonly aria-label="Enlace de red ${esc(base)}" value="${esc(link)}">
+      <button class="btn accent" type="button" data-copy="${id}">Copiar</button>
+    </div>`;
+  }).join('');
+  $('#obsLanShare').hidden = !urls.length;
+}
+
 function openObs() {
   const ratio = state.live.look.ratio;
   const [w, h] = OBS_SIZES[ratio] || OBS_SIZES['16/9'];
@@ -3481,9 +3495,9 @@ function openObs() {
   const k = auth.viewer ? `&k=${auth.viewer}` : '';
   $('#obsFull').value = `${base}?salida&obs${k}`;
   $('#obsOverlay').value = `${base}?salida&obs&transparente${k}`;
-  $('#obsWarn').hidden = serverLive;
   $('#obsDesktop').hidden = !DESKTOP;
   if (DESKTOP) refreshObsDesktop();
+  else renderObsLanLinks();
   $('#obsDialog').showModal();
 }
 
