@@ -3,7 +3,8 @@
   Biblia - servidor local para Windows. No instala nada: usa PowerShell y .NET, que ya vienen en Windows 10 y 11.
 
 .DESCRIPTION
-  Abre la app en http://localhost:3737. Lo más fácil es hacer doble clic en «iniciar-windows.cmd».
+  Haz doble clic en «iniciar-windows.cmd» para abrir la app en el navegador.
+  Usa http://localhost:3737 o el siguiente puerto disponible.
 
   SEGURIDAD
   - Por defecto solo escucha en este equipo: un escaneo de la red no encuentra el puerto.
@@ -17,7 +18,7 @@
     el control sigue siendo solo de este equipo.
 
 .PARAMETER Puerto
-  Puerto (entre 1024 y 65535). Por defecto 3737.
+  Puerto fijo (entre 1024 y 65535). Si se omite, usa 3737 o el siguiente puerto disponible.
 .PARAMETER SesionMin
   Minutos sin usar la consola tras los que se vuelve a pedir el PIN. Por defecto 720 (12 horas).
 .PARAMETER Red
@@ -65,7 +66,8 @@ USO
 
 OPCIONES
   (sin nada)        Abre la app en http://localhost:3737, solo en este equipo.
-  -Puerto 4000      Usa otro puerto (entre 1024 y 65535).
+                    Si el puerto está ocupado, usa el siguiente disponible.
+  -Puerto 4000      Usa un puerto fijo (entre 1024 y 65535).
   -SesionMin 30     Minutos sin usar la consola antes de volver a pedir el PIN
                     (por defecto 720 = 12 horas).
   -Red              Deja que otro equipo de la red vea la salida para OBS.
@@ -212,7 +214,6 @@ function Get-ChurchName { if (Test-Path $NameFile) { return (Get-Content -Raw $N
 
 # ───────────── Estado del servidor (en memoria; dura lo que dure encendido) ─────────────
 $Run = Join-Path ([IO.Path]::GetTempPath()) ('biblia-' + (New-RandomHex 6))
-New-Item -ItemType Directory -Force -Path $Run | Out-Null
 $Devices = @{}            # id → @{ Ec = verificador ECDSA; Since = hora de entrada }
 if ($SesionMin -lt 1) { Write-Host 'SesionMin debe ser 1 o más minutos.'; exit 1 }
 $Nonces = @{}             # número de un solo uso → hora
@@ -230,10 +231,6 @@ if ($Red) {
       ForEach-Object { $_.ToString() })
   } catch { $LanIps = @() }
 }
-$AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + @($LanIps | ForEach-Object { "${_}:$Puerto" })
-$AllowedOrigins = @("http://localhost:$Puerto", "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
-
-if ($RemoteHost) { $AllowedHosts += $RemoteHost }
 
 $Csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https://itunes.apple.com https://lrclib.net https://raw.githubusercontent.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 $SecHeaders = [ordered]@{
@@ -654,25 +651,45 @@ function Step-Conn($c) {
 }
 
 # ───────────── Arranque ─────────────
-$listeners = @()
+$requestedPort = $Puerto
+$lastPort = 65535
+if ($PSBoundParameters.ContainsKey('Puerto')) { $lastPort = $Puerto }
+
 $bindAddr = [Net.IPAddress]::Loopback
 if ($Red) { $bindAddr = [Net.IPAddress]::Any }
-try {
-  $l4 = New-Object Net.Sockets.TcpListener($bindAddr, $Puerto)
-  $l4.Server.ExclusiveAddressUse = $true
-  $l4.Start()
-  $listeners += $l4
-} catch {
-  Write-Host "El puerto $Puerto ya está en uso. Prueba con otro: iniciar-windows.cmd -Puerto $($Puerto + 1)"
-  exit 1
+$bindAddresses = @($bindAddr)
+# localhost puede resolverse por IPv4 o IPv6. Reserva primero el mismo puerto para ambos.
+if ([Net.Sockets.Socket]::OSSupportsIPv6) { $bindAddresses += [Net.IPAddress]::IPv6Loopback }
+
+while ($true) {
+  $listeners = @()
+  try {
+    foreach ($address in $bindAddresses) {
+      $listener = New-Object Net.Sockets.TcpListener($address, $Puerto)
+      $listeners += $listener
+      $listener.ExclusiveAddressUse = $true
+      $listener.Start()
+    }
+    break
+  } catch {
+    $cause = $_.Exception.GetBaseException()
+    foreach ($listener in $listeners) { try { $listener.Stop() } catch {} }
+    # Windows también puede devolver AccessDenied para un puerto reservado.
+    if ($cause -isnot [Net.Sockets.SocketException] -or $cause.SocketErrorCode -notin 'AddressAlreadyInUse', 'AccessDenied') { throw }
+    if ($Puerto -eq $lastPort) {
+      Write-Host "No se pudo abrir un puerto a partir del $requestedPort. Indica uno disponible con -Puerto."
+      exit 1
+    }
+    $Puerto++
+  }
 }
-try {
-  $l6 = New-Object Net.Sockets.TcpListener([Net.IPAddress]::IPv6Loopback, $Puerto)
-  $l6.Start()
-  $listeners += $l6
-} catch {}
 
 $Url = "http://localhost:$Puerto"
+$AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + @($LanIps | ForEach-Object { "${_}:$Puerto" })
+$AllowedOrigins = @($Url, "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
+if ($RemoteHost) { $AllowedHosts += $RemoteHost }
+
+if ($Puerto -ne $requestedPort) { Write-Host "El puerto $requestedPort está ocupado o reservado. Biblia usará el $Puerto." }
 Write-Host '=============================================='
 Write-Host '  Biblia · by @jairohm.dev'
 Write-Host '=============================================='
@@ -692,10 +709,10 @@ Write-Host "  Sesión    : se pide el PIN tras $SesionMin min sin usar la consol
 Write-Host '  Ayuda     : iniciar-windows.cmd -Ayuda'
 Write-Host '  Detener   : Ctrl+C o cierra esta ventana'
 Write-Host '=============================================='
-if (-not $NoAbrir) { Start-Process $Url }
-
 $conns = New-Object Collections.ArrayList
 try {
+  New-Item -ItemType Directory -Force -Path $Run | Out-Null
+  if (-not $NoAbrir) { Start-Process $Url }
   while ($true) {
     $busy = $false
     foreach ($l in $listeners) {

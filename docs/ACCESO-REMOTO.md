@@ -5,8 +5,8 @@ mantiene su funcionamiento actual; su servidor para OBS solo permite ver.
 
 ## Preparar y compartir
 
-1. Abre el servidor de forma habitual y entra por `http://localhost:3737`. Crea el PIN si
-   todavía no existe. Después detén ese servidor con Ctrl+C antes de reiniciarlo.
+1. Abre el servidor de forma habitual y entra en la dirección que muestra la línea `App`.
+   Crea el PIN si todavía no existe. Después detén ese servidor con Ctrl+C antes de reiniciarlo.
 2. Copia tu dominio HTTPS desde ngrok. En estos ejemplos sustituye
    `https://tu-dominio.ngrok-free.app` por tu URL real, sin barra final ni ruta.
 3. Inicia el servidor autorizando ese único dominio.
@@ -23,7 +23,8 @@ mantiene su funcionamiento actual; su servidor para OBS solo permite ver.
    .\iniciar-windows.cmd -OrigenRemoto https://tu-dominio.ngrok-free.app
    ```
 
-4. En otra terminal del mismo equipo inicia el túnel:
+4. En otra terminal del mismo equipo, ejecuta el comando de la línea `Túnel`.
+   Este ejemplo usa el puerto 3737.
 
    ```bash
    ngrok http http://127.0.0.1:3737 --url https://tu-dominio.ngrok-free.app --inspect=false
@@ -34,14 +35,13 @@ mantiene su funcionamiento actual; su servidor para OBS solo permite ver.
    del túnel local. El comando usa las opciones de la [CLI de ngrok](https://ngrok.com/docs/gateway/agent/cli).
 5. Comparte la URL HTTPS. En la otra computadora se abre la misma portada y se introduce
    el PIN existente. Cada navegador obtiene su propia llave de firma.
-6. En el equipo conectado al proyector abre `http://localhost:3737/?salida` y pon esa
-   ventana en la pantalla de proyección. También puedes mantener OBS apuntando a
-   `http://localhost:3737/?salida&obs`. Los cambios de **Poner en vivo** de la consola
-   remota llegan a esa salida. Mantén encendidos el servidor y ngrok.
+6. En el equipo conectado al proyector, añade `/?salida` a la dirección de la línea `App`
+   y abre esa URL en la pantalla de proyección. Para OBS, usa la dirección de la línea `OBS`.
+   Los cambios de **Poner en vivo** de la consola remota llegan a esa salida. Mantén
+   encendidos el servidor y ngrok.
 
 No necesitas `--red` / `-Red` para ngrok. El puerto puede seguir escuchando solo en
-`127.0.0.1`. Si cambias el puerto, cámbialo tanto en el servidor como en el comando de ngrok.
-Si cambia el dominio, reinicia el servidor con la nueva URL autorizada.
+`127.0.0.1`. Si cambia el dominio, reinicia el servidor con la nueva URL autorizada.
 
 ## Qué se comparte
 
@@ -71,8 +71,8 @@ elimínala también del entorno. No se borra el PIN ni tus datos.
 
 `You don't have permission to access this resource.` indica que Apache rechazó la petición.
 Comprueba que la URL configurada coincida exactamente con la URL HTTPS de ngrok y que
-hayas reiniciado el servidor después de configurarla. El puerto `3737` debe corresponder
-al servidor web, no al servidor de solo lectura de la app de escritorio.
+hayas reiniciado el servidor después de configurarla. Verifica que el túnel apunte al
+puerto que muestra el servidor web en la línea `App`.
 
 Pruebas de integración para desarrolladores en macOS/Linux (requieren Node solo para ejecutarlas):
 

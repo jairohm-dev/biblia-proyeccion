@@ -60,7 +60,8 @@ cd biblia-proyeccion
 ./serve.sh            # macOS / Linux → http://localhost:3737
 ```
 
-En **Windows**, doble clic en `iniciar-windows.cmd`.
+En **Windows**, haz doble clic en `iniciar-windows.cmd`. Biblia se abre en el navegador
+en `http://localhost:3737` o en el siguiente puerto disponible si el 3737 está ocupado.
 
 <details>
 <summary>Más opciones del servidor</summary>
