@@ -1,0 +1,77 @@
+name: Servidor de Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - serve.ps1
+      - iniciar-windows.cmd
+      - server/*.ps1
+      - .github/workflows/servidor-windows.yml
+  pull_request:
+    paths:
+      - serve.ps1
+      - iniciar-windows.cmd
+      - server/*.ps1
+      - .github/workflows/servidor-windows.yml
+
+permissions:
+  contents: read
+
+jobs:
+  arranque:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probar el lanzador con Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            throw 'Esta prueba requiere Windows PowerShell 5.1.'
+          }
+          $env:BIBLIA_CONF_DIR = Join-Path $env:RUNNER_TEMP 'biblia-config-prueba'
+          New-Item -ItemType Directory -Path $env:BIBLIA_CONF_DIR -Force | Out-Null
+          foreach ($file in 'viewer.key', 'install.id', 'pin') {
+            [IO.File]::WriteAllText((Join-Path $env:BIBLIA_CONF_DIR $file), '')
+          }
+          $output = & $env:ComSpec /d /c 'echo. | call iniciar-windows.cmd -Puerto 1'
+          if ($LASTEXITCODE -ne 1 -or ($output -join ' ') -notmatch 'Codigo de salida: 1') {
+            throw "El lanzador debe mostrar el error y conservar el codigo de salida. $output"
+          }
+
+          $stdout = Join-Path $env:RUNNER_TEMP 'biblia.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'biblia.stderr'
+          $ocupado = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 3737)
+          $servidor = $null
+          try {
+            $ocupado.Start()
+            $servidor = Start-Process $env:ComSpec -ArgumentList '/d /c call iniciar-windows.cmd -NoAbrir' `
+              -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            for ($intento = 0; $intento -lt 60 -and -not $servidor.HasExited; $intento++) {
+              $salida = Get-Content -Raw -LiteralPath $stdout
+              if ($salida -match 'App\s*:\s*http://localhost:(\d+)') {
+                $puerto = [int]$Matches[1]
+                if ($puerto -le 3737) { throw 'Biblia debe elegir otro puerto.' }
+                try {
+                  $portada = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$puerto/" -TimeoutSec 2
+                  $estado = Invoke-RestMethod -Uri "http://127.0.0.1:$puerto/api/auth?accion=estado" -TimeoutSec 2
+                } catch {
+                  Start-Sleep -Milliseconds 250
+                  continue
+                }
+                if ($portada.StatusCode -eq 200 -and $estado.configured -eq $false -and $estado.install -match '^[0-9a-f]{32}$') {
+                  Write-Host "Biblia sigue activa en el puerto $puerto."
+                  return
+                }
+              }
+              Start-Sleep -Milliseconds 250
+            }
+            Get-Content -LiteralPath $stdout, $stderr
+            throw 'Biblia no pudo servir la portada y el estado del PIN.'
+          } finally {
+            if ($servidor -and -not $servidor.HasExited) {
+              & taskkill.exe /pid $servidor.Id /t /f
+            }
+            $ocupado.Stop()
+          }

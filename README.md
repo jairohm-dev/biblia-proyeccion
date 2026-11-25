@@ -63,6 +63,8 @@ cd biblia-proyeccion
 En **Windows**, haz doble clic en `iniciar-windows.cmd`. En **Mac o Linux**, ejecuta `./serve.sh`.
 Elige **1. Iniciar** para abrir el navegador en `http://localhost:3737` o en el siguiente puerto
 disponible. Elige **2. Cambiar PIN** para abrir el formulario de cambio en el navegador.
+Si el navegador no se abre, usa la dirección que aparece en la terminal. Si falla el arranque,
+`iniciar-windows.cmd` deja el error en pantalla hasta que pulses una tecla.
 
 En el panel del equipo que ejecuta Biblia, abre **Acceso al panel**. Puedes habilitar o cerrar el
 acceso **en la misma red** o **por internet** y copiar el enlace para entrar con el PIN.

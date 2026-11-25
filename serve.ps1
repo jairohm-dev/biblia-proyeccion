@@ -64,6 +64,16 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
+$interactive = -not [Console]::IsInputRedirected
+$pauseOnError = $interactive -and ($Menu -or $PSBoundParameters.Count -eq 0) -and $env:BIBLIA_LANZADOR_CMD -ne '1'
+
+trap {
+  Write-Host ''
+  Write-Host 'Biblia se detuvo.' -ForegroundColor Red
+  Write-Host $_.Exception.Message
+  if ($pauseOnError) { [void](Read-Host 'Pulsa Intro para cerrar') }
+  exit 1
+}
 
 function Show-Ayuda {
   Write-Host @"
@@ -113,7 +123,7 @@ DETENER
 
 if ($Ayuda) { Show-Ayuda; exit 0 }
 $changePinOnStart = $false
-if ($Menu -or ($PSBoundParameters.Count -eq 0 -and -not [Console]::IsInputRedirected -and -not $OrigenRemoto)) {
+if ($Menu -or ($PSBoundParameters.Count -eq 0 -and $interactive -and -not $OrigenRemoto)) {
   while ($true) {
     Write-Host ''
     Write-Host 'Biblia'
@@ -121,14 +131,13 @@ if ($Menu -or ($PSBoundParameters.Count -eq 0 -and -not [Console]::IsInputRedire
     Write-Host '  2. Cambiar PIN'
     $opcion = Read-Host 'Elige una opción [1]'
     if ($null -eq $opcion -or $opcion -eq '0') { exit 0 }
-    if ($opcion -in '', '1', '2', '3', '4', '5') { break }
+    if ($opcion -in '', '1', '2') { break }
     Write-Host 'Elige una de las opciones del menú.'
   }
   if ($opcion -eq '2') { $changePinOnStart = $true }
 }
 if ($PanelRed -and $SoloLocal) {
-  Write-Host 'Elige -PanelRed para compartir el panel o -SoloLocal para usar solo esta PC.'
-  exit 1
+  throw 'Elige -PanelRed para compartir el panel o -SoloLocal para usar solo esta PC.'
 }
 if ($PanelRed) { $Red = $true }
 if ($SoloLocal) { $Red = $false }
@@ -140,8 +149,7 @@ if ($PanelRed -and -not $fixedPort -and $PSBoundParameters.ContainsKey('PuertoPa
   $fixedPort = $true
 }
 if ($Puerto -lt 1024 -or $Puerto -gt 65535) {
-  Write-Host "Puerto inválido: $Puerto (usa uno entre 1024 y 65535)"
-  exit 1
+  throw "Puerto inválido: $Puerto (usa uno entre 1024 y 65535)"
 }
 
 $RemoteHost = ''
@@ -150,15 +158,19 @@ $PublicPanelUrl = ''
 if ($Internet) { $OrigenRemoto = '' }
 if ($OrigenRemoto) {
   if ($OrigenRemoto.Length -gt 261 -or $OrigenRemoto -cnotmatch '^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$') {
-    Write-Host 'OrigenRemoto debe ser https://dominio exacto, en minúsculas, sin ruta, puerto ni comodines.'; exit 1
+    throw 'OrigenRemoto debe ser https://dominio exacto, en minúsculas, sin ruta, puerto ni comodines.'
   }
   $RemoteHost = $OrigenRemoto.Substring(8)
 }
 
 $Separator = [IO.Path]::DirectorySeparatorChar
 $Root = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd($Separator)
-$Conf = Join-Path $env:APPDATA 'Biblia'
-if ($env:BIBLIA_CONF_DIR) { $Conf = $env:BIBLIA_CONF_DIR }
+$Conf = $env:BIBLIA_CONF_DIR
+if (-not $Conf) {
+  $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+  if (-not $appData) { throw 'Windows no proporcionó la carpeta de la configuración de esta cuenta.' }
+  $Conf = Join-Path $appData 'Biblia'
+}
 New-Item -ItemType Directory -Force -Path $Conf | Out-Null
 $PinFile = Join-Path $Conf 'pin'
 $ViewerFile = Join-Path $Conf 'viewer.key'
@@ -181,7 +193,14 @@ if ($RestablecerPin) {
 }
 
 if ($OrigenRemoto -and (-not (Test-Path $PinFile) -or (Get-Item $PinFile).Length -eq 0)) {
-  Write-Host 'Crea primero el PIN entrando por localhost, sin -OrigenRemoto ni BIBLIA_ORIGEN_REMOTO.'; exit 1
+  throw 'Crea primero el PIN entrando por localhost, sin -OrigenRemoto ni BIBLIA_ORIGEN_REMOTO.'
+}
+
+$webFiles = @('index.html', 'console.html', 'app.js', 'auth.js', 'studio.js', 'styles.css', 'icon.svg',
+  'bible_rvr1960.json', 'himnarios.json')
+$missing = @($webFiles | Where-Object { -not [IO.File]::Exists((Join-Path $Root $_)) })
+if ($missing.Count) {
+  throw "Faltan archivos de Biblia ($($missing -join ', ')). Extrae el ZIP completo y abre iniciar-windows.cmd desde esa carpeta."
 }
 
 # ───────────── Criptografía (.NET de Windows) ─────────────
@@ -249,19 +268,30 @@ function Test-EcSignature($ec, [byte[]]$data, [byte[]]$sig) {
   return $ec.VerifyData($data, $sig, [Security.Cryptography.HashAlgorithmName]::SHA256)
 }
 
-if (-not (Test-Path $ViewerFile) -or (Get-Content -Raw $ViewerFile).Trim().Length -ne 32) { Set-Content -NoNewline -Path $ViewerFile -Value (New-RandomHex 16) }
-$Viewer = (Get-Content -Raw $ViewerFile).Trim()
-# Identifica esta instalación: si cambia (tras -Reiniciar), la app borra lo guardado en el navegador.
-$InstallFile = Join-Path $Conf 'install.id'
-if (-not (Test-Path $InstallFile) -or (Get-Content -Raw $InstallFile).Trim().Length -ne 32) { Set-Content -NoNewline -Path $InstallFile -Value (New-RandomHex 16) }
-$Install = (Get-Content -Raw $InstallFile).Trim()
+function Read-ConfigText([string]$path) {
+  if ([IO.File]::Exists($path)) { return [IO.File]::ReadAllText($path).Trim() }
+  return ''
+}
+
+function Get-OrCreateLocalId([string]$path) {
+  $value = Read-ConfigText $path
+  if ($value -cnotmatch '^[0-9a-f]{32}$') {
+    $value = New-RandomHex 16
+    Set-Content -NoNewline -LiteralPath $path -Value $value
+  }
+  return $value
+}
+
+$Viewer = Get-OrCreateLocalId $ViewerFile
+# Identifica esta instalación para que el navegador reconozca un restablecimiento.
+$Install = Get-OrCreateLocalId (Join-Path $Conf 'install.id')
 $NameFile = Join-Path $Conf 'iglesia'
-function Get-ChurchName { if (Test-Path $NameFile) { return (Get-Content -Raw $NameFile).Trim() } return '' }
+function Get-ChurchName { return (Read-ConfigText $NameFile) }
 
 # ───────────── Estado del servidor (en memoria; dura lo que dure encendido) ─────────────
 $Run = Join-Path ([IO.Path]::GetTempPath()) ('biblia-' + (New-RandomHex 6))
 $Devices = @{}            # id → @{ Ec = verificador ECDSA; Since = hora de entrada }
-if ($SesionMin -lt 1) { Write-Host 'SesionMin debe ser 1 o más minutos.'; exit 1 }
+if ($SesionMin -lt 1) { throw 'SesionMin debe ser 1 o más minutos.' }
 $Nonces = @{}             # número de un solo uso → hora
 $Media = @{}              # id → @{ Path; Type }
 $script:LiveJson = 'null'
@@ -383,8 +413,7 @@ function Add-Failure {
 }
 
 function Get-StoredPin {
-  if (-not (Test-Path $PinFile)) { return $null }
-  $parts = (Get-Content -Raw $PinFile).Trim().Split(' ')
+  $parts = (Read-ConfigText $PinFile).Split(' ')
   if ($parts.Length -ne 2) { return $null }
   return @{ Salt = $parts[0]; Hash = $parts[1] }
 }
@@ -864,9 +893,20 @@ function Open-Listeners([Net.IPAddress[]]$addresses, [int]$firstPort, [bool]$fix
     try {
       foreach ($address in $addresses) {
         $listener = New-Object Net.Sockets.TcpListener($address, $port)
+        try {
+          $listener.ExclusiveAddressUse = $true
+          $listener.Start()
+        } catch {
+          $listener.Stop()
+          $errorFromSocket = $_.Exception.GetBaseException()
+          if ($address.Equals([Net.IPAddress]::IPv6Loopback) -and
+              $errorFromSocket -is [Net.Sockets.SocketException] -and
+              $errorFromSocket.SocketErrorCode -in 'AddressNotAvailable', 'AddressFamilyNotSupported', 'ProtocolNotSupported') {
+            continue
+          }
+          throw
+        }
         $active += $listener
-        $listener.ExclusiveAddressUse = $true
-        $listener.Start()
       }
       return @{ Port = $port; Listeners = $active }
     } catch {
@@ -950,6 +990,7 @@ function Update-Sharing {
       'abririnternet' {
         if ($RemoteAccess) { break }
         if ($OrigenRemoto) { throw 'Ya hay un túnel configurado.' }
+        if (-not [IO.File]::Exists($cloudflareScript)) { throw 'Extrae el ZIP completo para usar Cloudflare.' }
         if (-not $CloudflareProcess) {
           if (-not $CloudflareDownload) {
             $script:CloudflareDownload = [PowerShell]::Create()
@@ -983,7 +1024,7 @@ function Update-Sharing {
     }
     $script:SharingResult = '{"ok":true}'
   } catch {
-    if ($SharingAction -eq 'abririnternet') { Stop-CloudflareTunnel }
+    if ($CloudflareProcess -and $SharingAction -eq 'abririnternet') { Stop-CloudflareTunnel }
     Write-Host $_.Exception.Message
     $script:SharingResult = '{"error":"conexion"}'
   }
@@ -1009,7 +1050,8 @@ $CloudflareNextPoll = [DateTime]::MinValue
 $SharingAction = ''
 $SharingResult = '{}'
 $PanelListeners = @()
-. (Join-Path $Root 'server/cloudflare.ps1')
+$cloudflareScript = Join-Path $Root 'server/cloudflare.ps1'
+if ([IO.File]::Exists($cloudflareScript)) { . $cloudflareScript }
 $conns = New-Object Collections.ArrayList
 try {
   if ($PanelRed -and -not $LanIps.Count) {
@@ -1030,9 +1072,10 @@ try {
   New-Item -ItemType Directory -Force -Path $Run | Out-Null
   if ($Internet) {
     try {
+      if (-not [IO.File]::Exists($cloudflareScript)) { throw 'Extrae el ZIP completo para usar Cloudflare.' }
       Set-PublicPanel (Start-CloudflareTunnel)
     } catch {
-      Stop-CloudflareTunnel
+      if ($CloudflareProcess) { Stop-CloudflareTunnel }
       Write-Host $_.Exception.Message
       Write-Host 'No se pudo crear el enlace de internet. Biblia sigue disponible en este equipo.'
     }
@@ -1069,7 +1112,13 @@ try {
   Write-Host '  Ayuda     : iniciar-windows.cmd -Ayuda'
   Write-Host '  Detener   : Ctrl+C o cierra esta ventana'
   Write-Host '=============================================='
-  if (-not $NoAbrir) { Start-Process $openUrl }
+  if (-not $NoAbrir) {
+    try { Start-Process -FilePath $openUrl }
+    catch {
+      Write-Host 'Biblia sigue encendida. Abre esta dirección en tu navegador:' -ForegroundColor Yellow
+      Write-Host "  $openUrl"
+    }
+  }
   while ($true) {
     Update-Sharing
     $busy = $false
