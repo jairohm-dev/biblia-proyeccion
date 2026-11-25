@@ -13,7 +13,8 @@ rev="$RUN/live.rev"
 if [ "$REQUEST_METHOD" = "POST" ]; then
   is_loopback || reply '403 Forbidden' '{"error":"solo-este-equipo"}'
   check_origin
-  read_body 262144
+  # Lleva la imagen de fondo en base64: una foto de 1920 px puede pesar varios MB.
+  read_body 16777216
   verify_signature
   mv "$BODY" "$state"
   echo $(( $(cat "$rev") + 1 )) > "$RUN/live.rev.$$" && mv "$RUN/live.rev.$$" "$rev"

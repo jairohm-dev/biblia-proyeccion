@@ -478,9 +478,11 @@ function renderStageMedia(stage, media, playback, silent) {
     }
     let tries = 0;
     el.addEventListener('error', () => {
-      // En OBS el archivo puede tardar en subirse al servidor: se reintenta durante medio minuto.
-      if (!el.dataset.src || ++tries > 30) return;
-      setTimeout(() => { el.src = `${el.dataset.src}${el.dataset.src.includes('?') ? '&' : '?'}r=${Date.now()}`; }, 1000);
+      // En OBS el archivo puede tardar en subirse al servidor o el servidor puede estar reiniciándose: lo
+      // que viene de él se reintenta mientras siga en pantalla; lo demás, durante medio minuto.
+      if (!el.dataset.src || !el.isConnected) return;
+      if (++tries > 30 && !el.dataset.src.startsWith('api/media')) return;
+      setTimeout(() => { el.src = `${el.dataset.src}${el.dataset.src.includes('?') ? '&' : '?'}r=${Date.now()}`; }, Math.min(tries, 5) * 1000);
     });
     if (url) { el.src = url; el.dataset.src = url; }
     layer.append(el);
@@ -579,12 +581,20 @@ function bootOutput() {
     (async () => {
       let rev = -1;
       for (;;) {
+        // El servidor responde en 20 s como mucho. Sin este límite, una conexión colgada (Wi-Fi, equipo que
+        // despierta) dejaría la salida congelada para siempre, sin ningún error.
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 30000);
         try {
-          const res = await fetch(`api/live?rev=${rev}${key}`, { cache: 'no-store' });
+          const res = await fetch(`api/live?rev=${rev}${key}`, { cache: 'no-store', signal: ctrl.signal });
+          if (!res.ok) throw new Error(`live ${res.status}`);
           const data = await res.json();
+          if (!Number.isInteger(data.rev)) throw new Error('live');
           if (data.rev !== rev) { rev = data.rev; if (data.state) { view = data.state; paint(true); } }
         } catch {
           await sleep(1500);
+        } finally {
+          clearTimeout(timer);
         }
       }
     })();
@@ -629,7 +639,8 @@ async function detectServer() {
   // En el ejecutable no hay servidor: lo en vivo va directo a la ventana del proyector.
   if (DESKTOP) { serverLive = true; postLive(); return; }
   try {
-    const res = await fetch('api/live?rev=-1', { cache: 'no-store' });
+    const key = auth.viewer ? `&k=${encodeURIComponent(auth.viewer)}` : '';
+    const res = await fetch(`api/live?rev=-1${key}`, { cache: 'no-store' });
     serverLive = res.ok && (res.headers.get('content-type') || '').includes('json');
   } catch {
     serverLive = false;
@@ -639,8 +650,11 @@ async function detectServer() {
 
 // Envía al momento, sin temporizadores (el navegador los frena hasta 1 s en ventanas tapadas, como la
 // consola detrás del proyector a pantalla completa). Si hay un envío en camino, se manda el último después.
+// Si falla por la red o el servidor, se reintenta solo con lo más reciente hasta que llegue: si no, OBS y el
+// proyector se quedarían en la diapositiva anterior aunque la consola muestre otra.
 let postBusy = false;
 let postDirty = false;
+let postFailing = false;
 
 function postLive() {
   if (!serverLive || auth.mode !== 'open') return;
@@ -648,9 +662,22 @@ function postLive() {
   if (postBusy) return;
   postBusy = true;
   (async () => {
+    let wait = 500;
     while (postDirty && auth.mode === 'open') {
       postDirty = false;
-      try { await apiSend('api/live', { body: JSON.stringify(state.live), headers: { 'Content-Type': 'application/json' } }); } catch { /* el siguiente cambio lo reintenta */ }
+      let res = null;
+      try { res = await apiSend('api/live', { body: JSON.stringify(state.live), headers: { 'Content-Type': 'application/json' }, timeout: 8000 }); } catch { /* sin respuesta */ }
+      if (res?.ok) {
+        wait = 500;
+        if (postFailing) { postFailing = false; toast('Conexión recuperada: OBS y el proyector ya reciben los cambios.'); }
+        continue;
+      }
+      const retry = !res || res.status >= 500;
+      if (!postFailing && auth.mode === 'open') {
+        postFailing = true;
+        toast(retry ? 'Sin conexión con el servidor: OBS y el proyector no reciben los cambios. Reintentando…' : 'OBS y el proyector no aceptaron el último cambio.');
+      }
+      if (retry) { postDirty = true; await sleep(wait); wait = Math.min(wait * 2, 4000); }
     }
     postBusy = false;
   })();
@@ -2480,7 +2507,8 @@ async function openOutputDesktop() {
 function openOutput() {
   if (DESKTOP) { openOutputDesktop(); return; }
   if (state.outWin && !state.outWin.closed) { state.outWin.focus(); return; }
-  const win = window.open('?salida', 'easybiblia-proyector', 'popup=yes,width=1280,height=720');
+  const key = auth.viewer ? `&k=${encodeURIComponent(auth.viewer)}` : '';
+  const win = window.open(`?salida${key}`, 'easybiblia-proyector', 'popup=yes,width=1280,height=720');
   if (!win) { toast('El navegador bloqueó la ventana. Permite ventanas emergentes para localhost y vuelve a intentarlo.'); return; }
   state.outWin = win;
   moveToSecondScreen(win);

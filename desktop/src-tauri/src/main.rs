@@ -287,7 +287,7 @@ fn app_forget(app: AppHandle, state: State<'_, AppState>) {
 #[tauri::command]
 fn set_live(app: AppHandle, state: State<'_, AppState>, live: String) -> Result<(), String> {
     state.use_session()?;
-    if live.len() > 262_144 || serde_json::from_str::<Value>(&live).is_err() {
+    if live.len() > 16_777_216 || serde_json::from_str::<Value>(&live).is_err() {
         return Err("estado".into());
     }
     {

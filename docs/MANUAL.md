@@ -120,6 +120,11 @@ aparece en OBS al momento. Requiere abrir la app con el servidor (`./serve.sh` o
 `iniciar-windows.cmd`). Para OBS en **otro equipo**, arranca con `--red` (Windows: `-Red`) y usa el
 enlace con `&k=…` que aparece al arrancar.
 
+Si la conexión con el servidor falla, OBS y el proyector se quedan en lo último que recibieron y se
+reconectan solos. La consola avisa y reenvía lo más reciente en cuanto vuelve la conexión; solo pide el
+PIN si el servidor se reinició o la sesión caducó. Si OBS se abrió antes que el servidor y la fuente
+quedó en blanco, selecciónala y pulsa **Actualizar**.
+
 ## Agregar himnos
 
 Edita `himnarios.json`. Cada himnario aparece en la barra lateral:

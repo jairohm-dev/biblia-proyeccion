@@ -38,8 +38,16 @@ const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-
 impl Server {
     pub fn start(app: AppHandle, shared: Arc<Shared>, lan: bool, viewer: String, first_port: u16) -> Result<Server, String> {
         let bind = if lan { "0.0.0.0" } else { "127.0.0.1" };
-        let (http, port) = (first_port..first_port + 20)
-            .find_map(|p| Http::http((bind, p)).ok().map(|h| (h, p)))
+        // Al volver a encender, el puerto anterior tarda un instante en liberarse. Se le espera: si se saltara
+        // al siguiente, OBS se quedaría apuntando a un enlace que ya no existe.
+        let (http, port) = (0..20)
+            .find_map(|i| {
+                if i > 0 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Http::http((bind, first_port)).ok().map(|h| (h, first_port))
+            })
+            .or_else(|| (first_port + 1..first_port + 20).find_map(|p| Http::http((bind, p)).ok().map(|h| (h, p))))
             .ok_or_else(|| "no hay ningún puerto libre para OBS".to_string())?;
         let http = Arc::new(http);
         let lan_ip = if lan { local_ip() } else { None };

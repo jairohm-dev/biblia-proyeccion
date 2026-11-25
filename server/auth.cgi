@@ -55,6 +55,7 @@ case "$REQUEST_METHOD:$action" in
     else reply '200 OK' "{\"configured\":false,\"install\":\"$(install_id)\"}"; fi ;;
 
   POST:crear)
+    [ "$HTTP_HOST" != "${BIBLIA_REMOTE_HOST:-}" ] || reply '403 Forbidden' '{"error":"registro-local"}'
     check_origin
     read_body 4096
     salt=$(json_field salt); ver=$(json_field verifier); pub=$(json_field pub); name=$(json_field name)

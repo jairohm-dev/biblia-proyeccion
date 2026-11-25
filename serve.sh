@@ -9,6 +9,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-3737}"
 # Minutos sin usar la consola tras los que se vuelve a pedir el PIN (720 = 12 horas).
 SESSION_MIN="${BIBLIA_SESION_MIN:-720}"
+REMOTE_ORIGIN="${BIBLIA_ORIGEN_REMOTO:-}"
+REMOTE_HOST=""
 BIND="127.0.0.1"
 RED=0
 RESET_PIN=0
@@ -33,6 +35,9 @@ OPCIONES
                         borra también lo guardado en el navegador (canciones, presentaciones,
                         imágenes, apariencia…). Pide confirmación.
   --no-abrir            No abre el navegador al arrancar.
+  BIBLIA_ORIGEN_REMOTO=https://tu-dominio.ngrok-free.app ./serve.sh
+                        Autoriza ese dominio HTTPS por un túnel local. Requiere PIN
+                        creado previamente. Sin esta variable, no hay acceso remoto.
   -h, --ayuda, --help   Muestra esta ayuda.
 
 SEGURIDAD
@@ -63,6 +68,14 @@ for arg in "$@"; do
     *) PORT="$arg" ;;
   esac
 done
+
+if [ -n "$REMOTE_ORIGIN" ]; then
+  if ! [[ "$REMOTE_ORIGIN" =~ ^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || [ "${#REMOTE_ORIGIN}" -gt 261 ]; then
+    echo "BIBLIA_ORIGEN_REMOTO debe ser https://dominio exacto, en minúsculas, sin ruta, puerto ni comodines."
+    exit 1
+  fi
+  REMOTE_HOST="${REMOTE_ORIGIN#https://}"
+fi
 
 if ! [[ "$SESSION_MIN" =~ ^[0-9]+$ ]] || [ "$SESSION_MIN" -lt 1 ]; then
   echo "BIBLIA_SESION_MIN debe ser un número de minutos (1 o más)."
@@ -107,6 +120,11 @@ if [ "$RESET_PIN" = 1 ]; then
   exit 0
 fi
 
+if [ -n "$REMOTE_ORIGIN" ] && [ ! -s "$CONF/pin" ]; then
+  echo "Crea primero el PIN entrando por localhost con ./serve.sh, sin BIBLIA_ORIGEN_REMOTO."
+  exit 1
+fi
+
 # Apache del sistema: macOS, Debian/Ubuntu o Fedora.
 HTTPD="${HTTPD:-}"; MODS="${APACHE_MODULES:-}"; MIME=""
 for cand in "/usr/sbin/httpd|/usr/libexec/apache2|/private/etc/apache2/mime.types" \
@@ -127,6 +145,26 @@ OPENSSL="/usr/bin/openssl"
 [ -x "$OPENSSL" ] || OPENSSL="$(command -v openssl || true)"
 if [ -z "$OPENSSL" ]; then echo "Falta openssl en el sistema."; exit 1; fi
 
+# Lo que dejó una ejecución anterior que no pudo cerrarse bien (ventana cerrada, equipo apagado): un
+# servidor huérfano ocupa el puerto y su carpeta temporal se queda para siempre. Las ejecuciones que
+# siguen vivas tienen su serve.pid y no se tocan.
+limpiar_huerfanos() {
+  local d pid owner
+  for d in "${TMPDIR:-/tmp}"/biblia.*; do
+    [ -d "$d" ] || continue
+    owner="$(cat "$d/serve.pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && ps -p "$owner" -o command= 2>/dev/null | grep -q 'serve\.sh'; then continue; fi
+    pid="$(cat "$d/httpd.pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -qF "$(basename "$d")"; then
+      kill "$pid" 2>/dev/null || true
+      echo "Cerré un servidor de Biblia que había quedado abierto (proceso $pid)."
+      sleep 1
+    fi
+    rm -rf "$d"
+  done
+}
+limpiar_huerfanos
+
 if command -v lsof >/dev/null && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "El puerto $PORT ya está en uso. Prueba con otro: ./serve.sh $((PORT + 1))"
   exit 1
@@ -141,6 +179,7 @@ VIEWER="$(cat "$CONF/viewer.key")"
 
 RUN="$(mktemp -d "${TMPDIR:-/tmp}/biblia.XXXXXX")"
 chmod 700 "$RUN"
+echo $$ > "$RUN/serve.pid"
 chmod +x "$DIR/server/"*.cgi
 
 stop() {
@@ -148,7 +187,7 @@ stop() {
   rm -rf "$RUN"
 }
 trap stop EXIT
-trap 'exit 0' INT TERM
+trap 'exit 0' INT TERM HUP
 
 LAN_IP=""
 if [ "$RED" = 1 ]; then
@@ -156,6 +195,8 @@ if [ "$RED" = 1 ]; then
 fi
 HOSTS="localhost|127\\.0\\.0\\.1|\\[::1\\]"
 [ -n "$LAN_IP" ] && HOSTS="$HOSTS|${LAN_IP//./\\.}"
+HOST_PATTERN="($HOSTS):${PORT}"
+[ -n "$REMOTE_HOST" ] && HOST_PATTERN="$HOST_PATTERN|${REMOTE_HOST//./\\.}"
 
 load() { [ -f "$MODS/$2" ] && echo "LoadModule $1 $MODS/$2"; return 0; }
 
@@ -182,13 +223,15 @@ load env_module mod_env.so
 load headers_module mod_headers.so
 cat <<EOF
 
-# Pocos procesos: pensado para equipos modestos (4 GB de RAM).
+# Pocos procesos: pensado para equipos modestos (4 GB de RAM). Solo se crean los que hagan falta, pero
+# cada proyector o fuente de OBS ocupa uno de forma permanente con su espera de 20 s: si se agotan, los
+# cambios de la consola hacen cola. Sin KeepAlive, una conexión inactiva no retiene ninguno.
 StartServers 2
 MinSpareServers 2
 MaxSpareServers 4
-MaxRequestWorkers 16
+MaxRequestWorkers 32
 Timeout 60
-KeepAliveTimeout 5
+KeepAlive Off
 LimitRequestBody 1048576
 LimitRequestFields 40
 LimitRequestFieldSize 4096
@@ -206,6 +249,8 @@ SetEnv BIBLIA_CONF "$CONF"
 SetEnv BIBLIA_OPENSSL "$OPENSSL"
 SetEnv BIBLIA_LAN_HOST "$LAN_IP"
 SetEnv BIBLIA_SESSION_MIN "$SESSION_MIN"
+SetEnv BIBLIA_REMOTE_ORIGIN "$REMOTE_ORIGIN"
+SetEnv BIBLIA_REMOTE_HOST "$REMOTE_HOST"
 ScriptAlias /api/live "$DIR/server/live.cgi"
 ScriptAlias /api/media "$DIR/server/media.cgi"
 ScriptAlias /api/auth "$DIR/server/auth.cgi"
@@ -214,6 +259,9 @@ SetEnv BIBLIA_APP_DIR "$DIR"
 
 <Location "/api/media">
   LimitRequestBody 1073741824
+</Location>
+<Location "/api/live">
+  LimitRequestBody 16777216
 </Location>
 
 <Directory />
@@ -225,7 +273,10 @@ SetEnv BIBLIA_APP_DIR "$DIR"
   AllowOverride None
   Require all granted
   # Solo se responde si se pide por el nombre de este equipo (frena el «DNS rebinding»).
-  <If "! %{HTTP_HOST} =~ m#^($HOSTS):${PORT}\$#">
+  <If "! %{HTTP_HOST} =~ m#^($HOST_PATTERN)\$#">
+    Require all denied
+  </If>
+  <If "%{HTTP_HOST} == '$REMOTE_HOST' && (%{REMOTE_ADDR} != '127.0.0.1' || req('X-Forwarded-Proto') != 'https')">
     Require all denied
   </If>
 </Directory>
@@ -252,6 +303,8 @@ EOF
 
 "$HTTPD" -f "$RUN/httpd.conf" -DFOREGROUND &
 SERVER=$!
+# En macOS: que el equipo y la pantalla no se duerman mientras el servidor esté encendido.
+if command -v caffeinate >/dev/null; then caffeinate -di -w $$ & fi
 sleep 1
 if ! kill -0 "$SERVER" 2>/dev/null; then
   echo "El servidor no pudo arrancar:"
@@ -264,6 +317,10 @@ echo "=============================================="
 echo "  Biblia · by @jairohm.dev"
 echo "=============================================="
 echo "  App       : $URL"
+if [ -n "$REMOTE_ORIGIN" ]; then
+  echo "  Remoto    : $REMOTE_ORIGIN (requiere PIN)"
+  echo "  Túnel     : ngrok http http://127.0.0.1:$PORT --url $REMOTE_ORIGIN --inspect=false"
+fi
 echo "  OBS       : $URL/?salida&obs"
 echo "  OBS (solo texto, fondo transparente):"
 echo "              $URL/?salida&obs&transparente"

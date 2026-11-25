@@ -78,6 +78,10 @@ En Windows: `iniciar-windows.cmd -Ayuda` (`-Red`, `-RestablecerPin`, `-Reiniciar
 En macOS usa el Apache del sistema; en Linux, el de la distribución (`sudo apt install apache2`).
 </details>
 
+Para controlar la versión web desde otra computadora mediante un enlace HTTPS, consulta
+la [guía de acceso remoto con ngrok](docs/ACCESO-REMOTO.md). Es opcional: requiere autorizar
+un dominio exacto y conserva el PIN y las firmas por dispositivo.
+
 ### Uso básico
 
 1. Registra tu iglesia y crea un **PIN** (de 6 a 8 números; no acepta PIN fáciles como 123456).
@@ -91,7 +95,7 @@ En macOS usa el Apache del sistema; en Linux, el de la distribución (`sudo apt 
 
 La red de una iglesia suele ser pública, así que la consola está protegida de verdad:
 
-- **El puerto no se ve desde la red:** el servidor escucha solo en este equipo, salvo con `--red`, y aun así otros equipos solo pueden *ver* la salida para OBS, con una llave de visor.
+- **El puerto no se ve desde la red:** por defecto el servidor escucha solo en este equipo. Con `--red`, otros equipos de la red solo pueden *ver* la salida para OBS, con una llave de visor. El control por ngrok requiere activar por separado un dominio HTTPS exacto y entrar con el PIN.
 - **La consola no existe sin PIN:** el servidor solo entrega `console.html` a un equipo que entró con el PIN. Esconder la portada desde el inspector no sirve de nada.
 - **No hay tokens que robar:** el PIN se deriva con PBKDF2-SHA256 (210 000 vueltas). Cada equipo crea una llave **ECDSA P-256 no exportable** y firma cada orden con hora y un número de un solo uso, así que una petición capturada no se puede repetir.
 - **Contra fuerza bruta**, el **DNS rebinding** y el **CSRF**: esperas crecientes tras fallar el PIN, comprobación del `Host` y del `Origin`, y solo se aceptan archivos multimedia.

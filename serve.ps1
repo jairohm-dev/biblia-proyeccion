@@ -46,6 +46,7 @@ param(
   [int]$Puerto = 3737,
   [int]$SesionMin = 720,
   [switch]$Red,
+  [string]$OrigenRemoto = $env:BIBLIA_ORIGEN_REMOTO,
   [switch]$RestablecerPin,
   [Alias('Reset', 'BorrarTodo')][switch]$Reiniciar,
   [switch]$NoAbrir,
@@ -70,6 +71,8 @@ OPCIONES
   -Red              Deja que otro equipo de la red vea la salida para OBS.
                     Desde la red solo se puede VER (con la llave de visor que se
                     muestra al arrancar); el control sigue siendo solo de este equipo.
+  -OrigenRemoto https://tu-dominio.ngrok-free.app
+                    Autoriza ese dominio HTTPS por un túnel local; requiere PIN previo.
   -RestablecerPin   Borra el PIN si lo olvidaste. Al abrir la app pedirá uno nuevo.
   -Reiniciar        Deja todo como recién instalado: borra el PIN, el nombre de la
                     iglesia y la llave de visor, y la próxima vez que se abra la app
@@ -97,6 +100,14 @@ DETENER
 if ($Ayuda) { Show-Ayuda; exit 0 }
 if ($Puerto -lt 1024 -or $Puerto -gt 65535) { Write-Host "Puerto inválido: $Puerto (usa uno entre 1024 y 65535)"; exit 1 }
 
+$RemoteHost = ''
+if ($OrigenRemoto) {
+  if ($OrigenRemoto.Length -gt 261 -or $OrigenRemoto -cnotmatch '^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$') {
+    Write-Host 'OrigenRemoto debe ser https://dominio exacto, en minúsculas, sin ruta, puerto ni comodines.'; exit 1
+  }
+  $RemoteHost = $OrigenRemoto.Substring(8)
+}
+
 $Root = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $Conf = Join-Path $env:APPDATA 'Biblia'
 if ($env:BIBLIA_CONF_DIR) { $Conf = $env:BIBLIA_CONF_DIR }
@@ -119,6 +130,10 @@ if ($RestablecerPin) {
   $ok = Read-Host '¿Seguro que quieres borrar el PIN? La próxima vez que abras la app tendrás que crear otro. (s/N)'
   if ($ok -match '^(s|si|sí)$') { Remove-Item -Force $PinFile; Write-Host 'PIN borrado.' } else { Write-Host 'No se borró nada.' }
   exit 0
+}
+
+if ($OrigenRemoto -and (-not (Test-Path $PinFile) -or (Get-Item $PinFile).Length -eq 0)) {
+  Write-Host 'Crea primero el PIN entrando por localhost, sin -OrigenRemoto ni BIBLIA_ORIGEN_REMOTO.'; exit 1
 }
 
 # ───────────── Criptografía (.NET de Windows) ─────────────
@@ -218,6 +233,8 @@ if ($Red) {
 $AllowedHosts = @("localhost:$Puerto", "127.0.0.1:$Puerto", "[::1]:$Puerto") + @($LanIps | ForEach-Object { "${_}:$Puerto" })
 $AllowedOrigins = @("http://localhost:$Puerto", "http://127.0.0.1:$Puerto", "http://[::1]:$Puerto")
 
+if ($RemoteHost) { $AllowedHosts += $RemoteHost }
+
 $Csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob:; connect-src 'self' https://itunes.apple.com https://lrclib.net https://raw.githubusercontent.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 $SecHeaders = [ordered]@{
   'X-Content-Type-Options' = 'nosniff'
@@ -295,7 +312,11 @@ function Get-JsonField($c, [string]$name) {
 }
 
 function Test-Loopback($c) { return [Net.IPAddress]::IsLoopback($c.Client.Client.RemoteEndPoint.Address) }
-function Test-Origin($c) { return $AllowedOrigins -contains $c.Headers['origin'] }
+function Test-Remote($c) { return $RemoteHost -and $c.Headers['host'] -eq $RemoteHost }
+function Test-Origin($c) {
+  if (Test-Remote $c) { return $c.Headers['origin'] -ceq $OrigenRemoto }
+  return $AllowedOrigins -contains $c.Headers['origin']
+}
 
 function Get-WaitLeft {
   $left = [int][Math]::Ceiling(($script:FailUntil - [DateTime]::UtcNow).TotalSeconds)
@@ -366,6 +387,7 @@ function Invoke-Auth($c) {
   if (-not (Test-Origin $c)) { Send-Json $c 403 'Forbidden' '{"error":"origen"}'; return }
   switch ($action) {
     'crear' {
+      if (Test-Remote $c) { Send-Json $c 403 'Forbidden' '{"error":"registro-local"}'; return }
       $salt = Get-JsonField $c 'salt'; $ver = Get-JsonField $c 'verifier'; $pub = Get-JsonField $c 'pub'; $name = Get-JsonField $c 'name'
       if ($salt -notmatch '^[0-9a-f]{32}$' -or $ver -notmatch '^[0-9a-f]{64}$') { Send-Json $c 400 'Bad Request' '{"error":"datos"}'; return }
       if ($name -and $name -cnotmatch '^[A-Za-z0-9_-]{1,160}$') { Send-Json $c 400 'Bad Request' '{"error":"nombre"}'; return }
@@ -434,7 +456,7 @@ function Invoke-Auth($c) {
 }
 
 function Test-Viewer($c) {
-  if (Test-Loopback $c) { return $true }
+  if ((Test-Loopback $c) -and -not (Test-Remote $c)) { return $true }
   return ((Get-Query $c 'k') -eq $Viewer)
 }
 
@@ -518,6 +540,12 @@ function Invoke-Static($c) {
 function Invoke-Request($c) {
   # Contra el «DNS rebinding»: solo se responde si se pide por el nombre de este equipo.
   if ($AllowedHosts -notcontains $c.Headers['host']) { Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return }
+  if (Test-Remote $c) {
+    if (-not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"tunel-local"}'; return }
+    if ($c.Headers['x-forwarded-proto'] -cne 'https') { Send-Json $c 403 'Forbidden' '{"error":"https"}'; return }
+  } elseif ($c.Headers['x-forwarded-for'] -or $c.Headers['x-forwarded-host'] -or $c.Headers['x-forwarded-proto'] -or $c.Headers['forwarded']) {
+    Send-Json $c 421 'Misdirected Request' '{"error":"host"}'; return
+  }
   # Sin -Red, nada de otros equipos (el puerto ni siquiera escucha en la red, pero por si acaso).
   if (-not $Red -and -not (Test-Loopback $c)) { Send-Json $c 403 'Forbidden' '{"error":"solo-este-equipo"}'; return }
   switch ($c.Path) {
@@ -551,6 +579,7 @@ function Start-Request($c, [byte[]]$data, [int]$headEnd) {
   if ($c.Headers.ContainsKey('transfer-encoding')) { Send-Json $c 411 'Length Required' '{"error":"longitud"}'; return }
   $limit = 1048576
   if ($c.Path -eq '/api/media') { $limit = 1073741824 }
+  if ($c.Path -eq '/api/live') { $limit = 16777216 }   # lleva la imagen de fondo en base64
   if ($len -gt $limit) { Send-Json $c 413 'Payload Too Large' '{"error":"grande"}'; return }
   $c.Remaining = $len
   $c.Hasher = [Security.Cryptography.SHA256]::Create()
@@ -648,6 +677,10 @@ Write-Host '=============================================='
 Write-Host '  Biblia · by @jairohm.dev'
 Write-Host '=============================================='
 Write-Host "  App       : $Url"
+if ($OrigenRemoto) {
+  Write-Host "  Remoto    : $OrigenRemoto (requiere PIN)"
+  Write-Host "  Túnel     : ngrok http http://127.0.0.1:$Puerto --url $OrigenRemoto --inspect=false"
+}
 Write-Host "  OBS       : $Url/?salida&obs"
 Write-Host '  OBS (solo texto, fondo transparente):'
 Write-Host "              $Url/?salida&obs&transparente"

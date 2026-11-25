@@ -88,7 +88,7 @@ function derSignature(raw) {
   return Uint8Array.from([0x30, body.length, ...body]);
 }
 
-async function signedFetch(url, { method = 'POST', body = '', headers = {} } = {}) {
+async function signedFetch(url, { method = 'POST', body = '', headers = {}, timeout = 0 } = {}) {
   const d = auth.device;
   if (!d) throw new Error('sin-llave');
   const bytes = body instanceof Blob ? new Uint8Array(await body.arrayBuffer()) : textBytes(body);
@@ -97,10 +97,18 @@ async function signedFetch(url, { method = 'POST', body = '', headers = {} } = {
   const nonce = randHex(16);
   const msg = [method, u.pathname + u.search, ts, nonce, hexOf(await crypto.subtle.digest('SHA-256', bytes))].join('\n');
   const raw = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, d.pair.privateKey, textBytes(msg)));
-  const res = await fetch(u, {
-    method, body: bytes, cache: 'no-store',
-    headers: { ...headers, 'X-Biblia-Device': d.id, 'X-Biblia-Time': ts, 'X-Biblia-Nonce': nonce, 'X-Biblia-Signature': b64Of(derSignature(raw)) },
-  });
+  // Con «timeout», una conexión colgada termina en error en vez de dejar esperando para siempre a quien llamó.
+  const ctrl = new AbortController();
+  const timer = timeout ? setTimeout(() => ctrl.abort(), timeout) : 0;
+  let res;
+  try {
+    res = await fetch(u, {
+      method, body: bytes, cache: 'no-store', signal: ctrl.signal,
+      headers: { ...headers, 'X-Biblia-Device': d.id, 'X-Biblia-Time': ts, 'X-Biblia-Nonce': nonce, 'X-Biblia-Signature': b64Of(derSignature(raw)) },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   // El servidor se reinició o la sesión caducó: hay que volver a poner el PIN.
   if (res.status === 401 && auth.mode === 'open') lockConsole();
   return res;
@@ -138,16 +146,18 @@ async function authStatus() {
 }
 
 // «keep»: además de comprobarla, la renueva (mientras se está en vivo la sesión no caduca por no tocar nada).
+// Devuelve true o false si hay respuesta clara, y null si no se pudo saber (red o servidor ocupado).
 async function checkSession(keep = false) {
-  if (DESKTOP) return tauri('auth_check', { keep }).catch(() => false);
+  if (DESKTOP) return tauri('auth_check', { keep }).catch(() => null);
   if (!auth.device) return false;
   try {
-    const res = await signedFetch(`api/auth?accion=${keep ? 'mantener' : 'comprobar'}`);
-    if (!res.ok) return false;
+    const res = await signedFetch(`api/auth?accion=${keep ? 'mantener' : 'comprobar'}`, { timeout: 10000 });
+    if (res.status === 401) return false;
+    if (!res.ok) return null;
     auth.viewer = (await res.json()).viewer || '';
     return true;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -412,12 +422,13 @@ function unlockConsole() {
   const gate = $('#gate');
   if (gate.open) gate.close();
   hideSplash();
-  // Cada 20 s se comprueba que la sesión siga viva (servidor apagado, caducada o PIN cambiado). Mientras
-  // se está en vivo se renueva: en una predicación pueden pasar muchos minutos sin tocar la consola y el
-  // siguiente versículo tiene que llegar al proyector y a OBS sin pedir el PIN.
+  // Cada 20 s se comprueba que la sesión siga viva (caducada o PIN cambiado). Mientras se está en vivo se
+  // renueva: en una predicación pueden pasar muchos minutos sin tocar la consola y el siguiente versículo
+  // tiene que llegar al proyector y a OBS sin pedir el PIN. Solo un «no» del servidor bloquea la consola:
+  // un fallo de red pasajero no debe pedir el PIN en pleno culto.
   clearInterval(sessionWatch);
   sessionWatch = setInterval(async () => {
-    if (auth.mode === 'open' && !(await checkSession(!!auth.keepAlive?.()))) lockConsole();
+    if (auth.mode === 'open' && (await checkSession(!!auth.keepAlive?.())) === false) lockConsole();
   }, 20000);
   auth.onUnlock?.();
 }

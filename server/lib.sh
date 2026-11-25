@@ -2,7 +2,7 @@
 # Funciones comunes de los CGI: respuestas, comprobación de origen y firmas ECDSA P-256.
 #
 # Cómo se protege el control:
-#   · Solo se acepta control desde este mismo equipo (REMOTE_ADDR de loopback).
+#   · Solo se acepta control desde este equipo o el túnel local autorizado (loopback).
 #   · El nombre del servidor (Host) y el origen (Origin) deben ser los de la app: frena el
 #     «DNS rebinding» y que una página web cualquiera mande órdenes al servidor.
 #   · Cada orden va firmada con la llave del equipo (ECDSA P-256, no exportable en el navegador),
@@ -31,6 +31,16 @@ is_loopback() {
 }
 
 check_host() {
+  # Solo se confía en el túnel que conecta por loopback; nunca en cabeceras de la LAN.
+  if [ -n "${BIBLIA_REMOTE_HOST:-}" ] && [ "$HTTP_HOST" = "$BIBLIA_REMOTE_HOST" ]; then
+    is_loopback || reply '403 Forbidden' '{"error":"tunel-local"}'
+    [ "${HTTP_X_FORWARDED_PROTO:-}" = https ] || reply '403 Forbidden' '{"error":"https"}'
+    return 0
+  fi
+  # Un proxy no puede disfrazarse de acceso local reescribiendo Host.
+  if [ -n "${HTTP_X_FORWARDED_FOR:-}${HTTP_X_FORWARDED_HOST:-}${HTTP_X_FORWARDED_PROTO:-}${HTTP_FORWARDED:-}" ]; then
+    reply '421 Misdirected Request' '{"error":"host"}'
+  fi
   case "$HTTP_HOST" in
     "localhost:$SERVER_PORT"|"127.0.0.1:$SERVER_PORT"|"[::1]:$SERVER_PORT") return 0 ;;
   esac
@@ -39,6 +49,10 @@ check_host() {
 }
 
 check_origin() {
+  if [ -n "${BIBLIA_REMOTE_HOST:-}" ] && [ "$HTTP_HOST" = "$BIBLIA_REMOTE_HOST" ]; then
+    [ "${HTTP_ORIGIN:-}" = "$BIBLIA_REMOTE_ORIGIN" ] && return 0
+    reply '403 Forbidden' '{"error":"origen"}'
+  fi
   case "${HTTP_ORIGIN:-}" in
     "http://localhost:$SERVER_PORT"|"http://127.0.0.1:$SERVER_PORT"|"http://[::1]:$SERVER_PORT") return 0 ;;
   esac
@@ -47,7 +61,7 @@ check_origin() {
 
 # Ver lo que se proyecta (OBS): desde este equipo, libre; desde la red, con la llave de visor (&k=…).
 check_viewer() {
-  is_loopback && return 0
+  if [ "$HTTP_HOST" != "${BIBLIA_REMOTE_HOST:-}" ] && is_loopback; then return 0; fi
   k=$(printf '&%s' "$QUERY_STRING" | sed -n 's/.*&k=\([0-9a-f]\{32\}\).*/\1/p')
   [ -n "$k" ] && [ "$k" = "$(cat "$CONF/viewer.key" 2>/dev/null)" ] && return 0
   reply '403 Forbidden' '{"error":"visor"}'
