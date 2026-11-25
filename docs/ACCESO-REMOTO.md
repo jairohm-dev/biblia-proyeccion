@@ -55,8 +55,11 @@ Si falla la conexión con Cloudflare, Biblia abre el panel local y muestra el av
   de la Biblia y las preferencias de tamaño guardadas en `ajustes.json` en el equipo servidor.
 - Se comparten las canciones guardadas, carpetas, textos, presentaciones y cambios en los himnarios.
   Los archivos de imagen, audio y video de la biblioteca se guardan en el navegador que los agregó.
-- El proyector y OBS reciben lo que se envía con **Poner en vivo**. Coordina quién controla la salida
-  cuando hay varias personas conectadas.
+- Ambos paneles ven la misma diapositiva **En vivo**. Al enviar, avanzar o quitar una diapositiva,
+  el cambio aparece en el equipo principal y en el OBS que lee de `localhost`.
+  El otro operador puede retomar desde la diapositiva que quedó en vivo.
+- Los cambios de apariencia se guardan para el siguiente inicio y se reflejan en la proyección activa.
+  Si editas el texto de un versículo en vivo, el texto se actualiza también en OBS.
 - El audio que la aplicación reproduce en la consola sale de la computadora que la controla,
   tal como en el funcionamiento actual.
 - El acceso de control se limita al panel de Biblia.

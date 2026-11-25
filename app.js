@@ -309,7 +309,7 @@ function mergeSettings(settings, patch) {
    Las colecciones se unen por «id» y las eliminaciones se recuerdan para que no reaparezcan al
    abrir otro equipo. */
 const LIB_COLLECTIONS = ['mine', 'folders', 'texts', 'decks'];
-const LIB_DELETED = [...LIB_COLLECTIONS, 'hymnEdits'];
+const LIB_DELETED = [...LIB_COLLECTIONS, 'hymnEdits', 'verseEdits'];
 const LIB_VERSIONED = [...LIB_DELETED, 'hymnVisibility'];
 const emptyDeleted = () => Object.fromEntries(LIB_DELETED.map((key) => [key, {}]));
 const safeKey = (key) => typeof key === 'string' && !['__proto__', 'constructor', 'prototype'].includes(key);
@@ -326,6 +326,12 @@ function cleanLibrary(value) {
   if (value.hymnEdits && typeof value.hymnEdits === 'object') {
     for (const [key, edit] of Object.entries(value.hymnEdits)) {
       if (safeKey(key) && (edit === null || (edit && typeof edit === 'object'))) lib.hymnEdits[key] = edit;
+    }
+  }
+  lib.verseEdits = {};
+  if (value.verseEdits && typeof value.verseEdits === 'object') {
+    for (const [key, edit] of Object.entries(value.verseEdits)) {
+      if (safeKey(key) && typeof edit === 'string') lib.verseEdits[key] = edit;
     }
   }
   lib.hymnHidden = Array.isArray(value.hymnHidden) ? value.hymnHidden.filter((key) => typeof key === 'string') : [];
@@ -348,7 +354,7 @@ function cleanLibrary(value) {
 }
 
 function libraryRecords(lib, kind) {
-  if (kind === 'hymnEdits') return new Map(Object.entries(lib.hymnEdits));
+  if (kind === 'hymnEdits' || kind === 'verseEdits') return new Map(Object.entries(lib[kind]));
   if (kind === 'hymnVisibility') return new Map([
     ...lib.hymnHidden.map(id => [id, true]), ...lib.hymnShown.map(id => [id, false]),
   ]);
@@ -386,7 +392,7 @@ function mergeLibrary(server, local) {
     }
     for (const id of Object.keys(out.deleted[kind] || {})) items.delete(id);
     out.versions[kind] = mergeLibraryDates(a.versions[kind], b.versions[kind]);
-    if (kind === 'hymnEdits') out.hymnEdits = Object.fromEntries(items);
+    if (kind === 'hymnEdits' || kind === 'verseEdits') out[kind] = Object.fromEntries(items);
     else if (kind === 'hymnVisibility') {
       out.hymnHidden = [...items.keys()].filter(id => items.get(id));
       out.hymnShown = [...items.keys()].filter(id => !items.get(id));
@@ -396,10 +402,10 @@ function mergeLibrary(server, local) {
 }
 
 const libraryHasContent = (lib) => !!lib && (LIB_COLLECTIONS.some((key) => lib[key]?.length) ||
-  Object.keys(lib.hymnEdits || {}).length > 0 || lib.hymnHidden.length || lib.hymnShown.length ||
+  Object.keys(lib.hymnEdits).length || Object.keys(lib.verseEdits).length || lib.hymnHidden.length || lib.hymnShown.length ||
   ['deleted', 'revived'].some((field) => LIB_DELETED.some((key) => Object.keys(lib[field]?.[key] || {}).length > 0)));
 const librarySignature = (lib) => JSON.stringify([lib?.updatedAt || 0,
-  ...LIB_COLLECTIONS.map((key) => lib?.[key] || []), lib?.hymnEdits || {}, lib?.hymnHidden || [],
+  ...LIB_COLLECTIONS.map((key) => lib?.[key] || []), lib?.hymnEdits || {}, lib?.verseEdits || {}, lib?.hymnHidden || [],
   lib?.hymnShown || [], lib?.deleted || {}, lib?.revived || {}, lib?.versions || {}]);
 
 function localLibrary() {
@@ -408,7 +414,7 @@ function localLibrary() {
     mine: store.get(KEY.mine, []), folders: store.get(KEY.folders, []),
     texts: store.get(KEY.texts, []), decks: store.get(KEY.decks, []),
     hymnEdits: store.get(KEY.hymnEdits, {}) || {}, hymnHidden: store.get(KEY.hymnHidden, []),
-    hymnShown: store.get(KEY.hymnShown, []),
+    hymnShown: store.get(KEY.hymnShown, []), verseEdits: store.get(VERSE_EDITS_KEY, {}),
     deleted: store.get(KEY.deleted, {}) || {}, revived: store.get(KEY.revived, {}) || {},
     versions: store.get(KEY.libraryVersions, {}) || {},
   };
@@ -418,6 +424,7 @@ function applyLibraryToLocal(lib) {
   if (!lib) return;
   for (const key of LIB_COLLECTIONS) store.set(KEY[key], lib[key]);
   store.set(KEY.hymnEdits, lib.hymnEdits);
+  store.set(VERSE_EDITS_KEY, lib.verseEdits);
   store.set(KEY.hymnHidden, lib.hymnHidden);
   store.set(KEY.hymnShown, lib.hymnShown);
   store.set(KEY.deleted, lib.deleted);
@@ -440,7 +447,7 @@ function librarySnapshot() {
     v: 1, updatedAt: libraryUpdatedAt,
     mine: state.mine || [], folders: state.folders || [], texts: state.texts || [], decks: state.decks || [],
     hymnEdits: state.hymnEdits || {}, hymnHidden: [...(state.hymnHidden || [])],
-    hymnShown: [...(state.hymnShown || [])],
+    hymnShown: [...(state.hymnShown || [])], verseEdits: verseEdits(),
     deleted: state.deleted || emptyDeleted(), revived: state.revived || emptyDeleted(),
     versions: libraryVersions,
   });
@@ -1036,54 +1043,71 @@ function bootOutput() {
 /* Estado «En vivo» para OBS: la consola lo envía al servidor si este lo admite (./serve.sh). */
 let serverLive = false;
 
-async function detectServer() {
-  // En el ejecutable no hay servidor: lo en vivo va directo a la ventana del proyector.
-  if (DESKTOP) { serverLive = true; postLive(); return; }
-  try {
-    const key = auth.viewer ? `&k=${encodeURIComponent(auth.viewer)}` : '';
-    const res = await fetch(`api/live?rev=-1${key}`, { cache: 'no-store' });
-    serverLive = res.ok && (res.headers.get('content-type') || '').includes('json');
-  } catch {
-    serverLive = false;
-  }
-  $('#obsWarn').hidden = serverLive;
-  if (serverLive) postLive();
+function detectServer() {
+  if (DESKTOP) serverLive = true;
+  else watchProjection();
 }
 
-// Envía al momento, sin temporizadores (el navegador los frena hasta 1 s en ventanas tapadas, como la
-// consola detrás del proyector a pantalla completa). Si hay un envío en camino, se manda el último después.
-// Si falla por la red o el servidor, se reintenta solo con lo más reciente hasta que llegue: si no, OBS y el
-// proyector se quedarían en la diapositiva anterior aunque la consola muestre otra.
+// Las acciones se envían enseguida. Si coinciden varios cambios, queda en cola solo el más reciente.
 let postBusy = false;
-let postDirty = false;
 let postFailing = false;
-let canPublishLive = DESKTOP || localConsole();
+let queuedLive = null;
+let appearanceTimer = 0;
+const projectionOperator = uid();
 
-function postLive() {
-  if (!sessionReady || !serverLive || auth.mode !== 'open' || !canPublishLive) return;
-  postDirty = true;
+function postLive(appearanceOnly = false) {
+  if (!sessionReady || !serverLive || auth.mode !== 'open') return;
+  clearTimeout(appearanceTimer);
+  if (DESKTOP) {
+    queuedLive = { ...state.live };
+  } else {
+    const view = appearanceOnly && remoteProjection ? remoteProjection : {
+      ...state.live,
+      position: projectionPosition(),
+    };
+    queuedLive = {
+      ...view, look: { ...state.live.look }, operator: projectionOperator,
+      preferences: { theme: store.get(PREFERENCES.theme, 'auto'), studio: state.studio },
+    };
+  }
   if (postBusy) return;
   postBusy = true;
   (async () => {
     let wait = 500;
-    while (postDirty && auth.mode === 'open') {
-      postDirty = false;
-      let res = null;
-      try { res = await apiSend('api/live', { body: JSON.stringify(state.live), headers: { 'Content-Type': 'application/json' }, timeout: 8000 }); } catch { /* sin respuesta */ }
-      if (res?.ok) {
-        wait = 500;
-        if (postFailing) { postFailing = false; toast('Conexión recuperada: OBS y el proyector ya reciben los cambios.'); }
-        continue;
+    try {
+      while (queuedLive && auth.mode === 'open') {
+        const next = queuedLive;
+        queuedLive = null;
+        let res = null;
+        try {
+          res = await apiSend('api/live', { body: JSON.stringify(next), headers: { 'Content-Type': 'application/json' }, timeout: 8000 });
+        } catch { /* sin respuesta */ }
+        if (res?.ok) {
+          wait = 500;
+          if (postFailing) { postFailing = false; toast('Conexión recuperada: OBS y el proyector ya reciben los cambios.'); }
+          continue;
+        }
+        const retry = !res || res.status >= 500;
+        if (!postFailing && auth.mode === 'open') {
+          postFailing = true;
+          toast(retry ? 'Sin conexión con el servidor. Reintentando el cambio…' : 'El servidor no aceptó el último cambio.');
+        }
+        if (retry) {
+          queuedLive ??= next;
+          await sleep(wait);
+          wait = Math.min(wait * 2, 4000);
+        }
       }
-      const retry = !res || res.status >= 500;
-      if (!postFailing && auth.mode === 'open') {
-        postFailing = true;
-        toast(retry ? 'Sin conexión con el servidor: OBS y el proyector no reciben los cambios. Reintentando…' : 'OBS y el proyector no aceptaron el último cambio.');
-      }
-      if (retry) { postDirty = true; await sleep(wait); wait = Math.min(wait * 2, 4000); }
+    } finally {
+      postBusy = false;
     }
-    postBusy = false;
   })();
+}
+
+function publishAppearance() {
+  if (DESKTOP) return;
+  clearTimeout(appearanceTimer);
+  appearanceTimer = setTimeout(() => postLive(true), 100);
 }
 
 /* ───────────── Consola: estado ───────────── */
@@ -1162,8 +1186,18 @@ function saveVerseEdit(b, ch, v, text) {
   const edits = verseEdits();
   const original = state.bible[b].chapters[ch][v];
   const key = verseKey(b, ch, v);
-  if (!text.trim() || text.trim() === original.trim()) delete edits[key]; else edits[key] = text.trim();
+  if (!text.trim() || text.trim() === original.trim()) {
+    delete edits[key];
+    markLibraryDeleted('verseEdits', key);
+  } else {
+    edits[key] = text.trim();
+    if (state.deleted.verseEdits?.[key]) markLibraryAlive('verseEdits', key);
+  }
   store.set(VERSE_EDITS_KEY, edits);
+  syncLibrary();
+  const active = state.liveAt;
+  const editingLive = state.onAir && active?.item.kind === 'bible' && active.item.b === b && active.item.ch === ch
+    && slideAt(active)?.v === v;
   // Se rehace lo abierto y lo que está en vivo (si es ese capítulo) para que se vea al momento.
   const rebuild = (item) => (item?.kind === 'bible' && item.b === b && item.ch === ch ? makeBibleItem(item.b, item.ch, item.from, item.to) : null);
   const before = state.item;
@@ -1174,7 +1208,7 @@ function saveVerseEdit(b, ch, v, text) {
     if (live) state.liveAt = { item: live, i: state.liveAt.i };
   }
   renderStrip();
-  update(false);
+  update(false, editingLive);
 }
 
 /* ---------- Editor de diseño: las cajas del texto y de la cita ---------- */
@@ -1490,6 +1524,7 @@ async function bootConsole() {
   state.texts = savedLibrary.texts;
   state.decks = savedLibrary.decks;
   state.hymnEdits = savedLibrary.hymnEdits;
+  verseEditsCache = savedLibrary.verseEdits;
   state.hymnHidden = new Set(savedLibrary.hymnHidden);
   state.hymnShown = new Set(savedLibrary.hymnShown);
   state.deleted = savedLibrary.deleted;
@@ -1663,6 +1698,7 @@ function restoreSession(s) {
   sessionReady = true;
   renderStrip();
   update(false);
+  openProjectionSession();
 }
 
 function saveSession() {
@@ -2664,7 +2700,7 @@ function loadItem(item, index = 0) {
   renderStrip();
   renderLibBody();
   syncGotoFromItem();
-  update(true);
+  update(true, !studioOn() && state.onAir);
   if (isCompact()) setPane('live');
   revealSlide('is-current');
 }
@@ -2686,7 +2722,7 @@ function select(i) {
   if (!state.item) return;
   state.previewIndex = clamp(i, 0, state.item.slides.length - 1);
   syncGotoFromItem();
-  update(true);
+  update(true, !studioOn() && state.onAir);
   revealSlide('is-current', true);
 }
 
@@ -2716,24 +2752,40 @@ const slideAt = (at) => (at ? at.item.slides[at.i] : null);
 let liveStage = null;
 let remoteProjection = null;
 let watchingProjection = false;
+let lastLiveSnapshot = null;
+let initialProjectionApplied = false;
 
-async function watchStudioProjection() {
-  const watching = () => studioOn() && auth.mode === 'open' && !canPublishLive;
-  if (watchingProjection || !watching()) return;
+function openProjectionSession() {
+  if (!sessionReady || !lastLiveSnapshot || initialProjectionApplied) return;
+  initialProjectionApplied = true;
+  if (lastLiveSnapshot.state) receiveProjection(lastLiveSnapshot.state);
+  else restoreEmptyProjection();
+}
+
+function restoreEmptyProjection() {
+  if (!localConsole() || !state.onAir) return;
+  resyncServer();
+  postLive(true);
+}
+
+async function watchProjection() {
+  if (DESKTOP || watchingProjection || auth.mode !== 'open') return;
   watchingProjection = true;
   let revision = -1;
   try {
-    while (watching()) {
-      const key = `&k=${encodeURIComponent(auth.viewer)}`;
+    while (auth.mode === 'open') {
+      const key = auth.viewer ? `&k=${encodeURIComponent(auth.viewer)}` : '';
       try {
         const data = await readProjection(revision, key);
-        if (!watching()) return;
-        if (data.rev !== revision) {
-          revision = data.rev;
-          remoteProjection = data.state;
-          paintLiveMonitor(false);
-          renderMonitorMeta();
-        }
+        if (auth.mode !== 'open') return;
+        serverLive = true;
+        $('#obsWarn').hidden = true;
+        if (data.rev === revision) continue;
+        revision = data.rev;
+        lastLiveSnapshot = data;
+        if (!initialProjectionApplied) openProjectionSession();
+        else if (data.state) receiveProjection(data.state);
+        else if (localConsole() && state.onAir && await checkSession()) restoreEmptyProjection();
       } catch {
         await sleep(1500);
       }
@@ -2743,11 +2795,121 @@ async function watchStudioProjection() {
   }
 }
 
+function sameProjectionItem(view, previous) {
+  return slideKey(view?.slide) === slideKey(previous?.slide)
+    && JSON.stringify(view?.position || null) === JSON.stringify(previous?.position || null);
+}
+
+function projectionPosition() {
+  if (!state.onAir || !state.liveAt) return null;
+  const { item, i } = state.liveAt;
+  const position = { item: describe(item), index: i, bibleId: state.bibleId };
+  if (item.kind === 'bible') {
+    const key = verseKey(item.b, item.ch, item.slides[i].v);
+    const revision = Math.max(libraryVersions.verseEdits?.[key] || 0, state.deleted.verseEdits?.[key] || 0);
+    if (revision) position.verseEdit = { revision, text: verseEdits()[key] ?? null };
+  }
+  return position;
+}
+
+function receiveVerseEdit(view) {
+  const position = view.position;
+  const edit = position?.verseEdit;
+  const item = position?.item;
+  if (!edit || item?.kind !== 'bible' || !bibleMeta(position.bibleId) || !Number.isFinite(edit.revision) ||
+      ![item.b, item.ch, view.slide?.v].every(Number.isInteger) ||
+      (edit.text !== null && typeof edit.text !== 'string')) return;
+  const key = `${position.bibleId}|${item.b}|${item.ch}|${view.slide.v}`;
+  const versions = libraryVersions.verseEdits ??= {};
+  const deleted = state.deleted.verseEdits ??= {};
+  const revived = state.revived.verseEdits ??= {};
+  if (edit.revision <= Math.max(versions[key] || 0, deleted[key] || 0)) return;
+  const edits = verseEdits();
+  if (edit.text === null) {
+    delete edits[key];
+    deleted[key] = edit.revision;
+    delete revived[key];
+    libraryBaseline.verseEdits?.delete(key);
+  } else {
+    edits[key] = edit.text;
+    delete deleted[key];
+    revived[key] = edit.revision;
+    libraryBaseline.verseEdits?.set(key, JSON.stringify(edit.text));
+  }
+  versions[key] = edit.revision;
+  libraryUpdatedAt = Math.max(libraryUpdatedAt, edit.revision);
+  store.set(VERSE_EDITS_KEY, edits);
+  store.set(KEY.libraryVersions, libraryVersions);
+  store.set(KEY.libraryUpdatedAt, libraryUpdatedAt);
+  store.set(KEY.deleted, state.deleted);
+  store.set(KEY.revived, state.revived);
+}
+
+function useSharedAppearance(view) {
+  if (view.look) {
+    const look = { ...DEFAULT_LOOK, ...migrateLook(view.look), ...sendingSettings.look, ...pendingSettings.look };
+    const before = state.live.look;
+    if (Object.keys(look).some(key => key === 'layout' ? JSON.stringify(look.layout) !== JSON.stringify(before.layout) : look[key] !== before[key])) {
+      state.live.look = look;
+      store.set(KEY.look, look);
+      syncLookControls();
+      applyRootRatio();
+    }
+  }
+  const theme = view.preferences?.theme;
+  if (['auto', 'light', 'dark'].includes(theme) && !sendingSettings.theme && !pendingSettings.theme) {
+    if (store.get(PREFERENCES.theme, 'auto') !== theme) {
+      store.set(PREFERENCES.theme, theme);
+      selectTheme(theme);
+    }
+  }
+  const studio = view.preferences?.studio;
+  if (typeof studio === 'boolean' && pendingSettings.studio === undefined && sendingSettings.studio === undefined) {
+    if (state.studio !== studio) {
+      state.studio = studio;
+      store.set(PREFERENCES.studio, studio);
+      applyStudio();
+      return true;
+    }
+  }
+  return false;
+}
+
+function receiveProjection(view) {
+  if (view.operator === projectionOperator && !remoteProjection) return;
+  if (postBusy && queuedLive) return; // El siguiente envío devuelve el estado definitivo.
+  const sameSlide = sameProjectionItem(view, remoteProjection);
+  remoteProjection = view;
+  receiveVerseEdit(view);
+  const studioChanged = useSharedAppearance(view);
+  state.onAir = !!view.slide;
+  const position = view.position;
+  if (!sameSlide || studioChanged) {
+    let item = null;
+    if (position && (position.item?.kind !== 'bible' || position.bibleId === state.bibleId)) item = itemFrom(position.item);
+    const index = position?.index;
+    state.liveAt = item?.slides[index] ? { item, i: index } : null;
+    if (state.liveAt) {
+      const at = state.liveAt;
+      const preview = studioOn() ? target(1, at.item, at.i) || at : at;
+      state.item = preview.item;
+      state.previewIndex = preview.i;
+      renderStrip();
+      renderLibBody();
+      syncGotoFromItem();
+    }
+  }
+  update(!sameSlide);
+}
+
+function sharedMediaUrl(id) {
+  return `api/media?id=${encodeURIComponent(id)}&k=${encodeURIComponent(auth.viewer)}`;
+}
+
 function paintLiveMonitor(animate) {
   if (!studioOn() || !liveStage) return;
-  if (!canPublishLive && remoteProjection?.look) {
-    const mediaUrl = id => `api/media?id=${encodeURIComponent(id)}&k=${encodeURIComponent(auth.viewer)}`;
-    paintStage(liveStage, { ...remoteProjection, silent: true, mediaUrl }, animate);
+  if (remoteProjection) {
+    paintStage(liveStage, { ...remoteProjection, look: state.live.look, silent: true, mediaUrl: sharedMediaUrl }, animate);
   } else {
     const audible = state.live.slide?.media?.kind === 'video';
     paintStage(liveStage, { ...state.live, silent: !audible }, animate);
@@ -2787,10 +2949,7 @@ function resumeLive() {
 
 function setOnAir(on) {
   if (on && !state.item && !state.liveAt) return;
-  if (on || (studioOn() && remoteProjection?.slide)) {
-    canPublishLive = true;
-    remoteProjection = null;
-  }
+  remoteProjection = null;
   const before = slideAt(state.liveAt);
   state.onAir = on;
   // Un video empieza a reproducirse al ponerlo en vivo y se pausa al apagar.
@@ -2799,7 +2958,7 @@ function setOnAir(on) {
     setPlayback({ playing: on });
     return;
   }
-  update(false);
+  update(false, true);
 }
 
 function setPlayback(patch) {
@@ -2807,7 +2966,7 @@ function setPlayback(patch) {
   const now = Date.now();
   state.playback = { ...pb, position: playbackPosition(pb), at: now, ...patch };
   if ('position' in patch) state.playback.position = patch.position;
-  update(false);
+  update(false, state.onAir && (!studioOn() || state.liveAt?.item === state.item));
   if (state.item?.kind === 'media') $('#stripActions').innerHTML = stripActionsHtml(state.item);
 }
 
@@ -2815,20 +2974,25 @@ function currentSlide() {
   return state.item ? state.item.slides[state.previewIndex] : null;
 }
 
-function update(animate) {
+function update(animate, publish = false) {
+  if (publish) remoteProjection = null;
   const slide = currentSlide();
   const studio = studioOn();
-  if (!studio) state.liveAt = slide ? { item: state.item, i: state.previewIndex } : null;
-  const live = state.onAir ? slideAt(state.liveAt) : null;
+  if (!studio && !remoteProjection) state.liveAt = slide ? { item: state.item, i: state.previewIndex } : null;
+  const live = remoteProjection ? remoteProjection.slide : state.onAir ? slideAt(state.liveAt) : null;
   const liveChanged = live !== state.live.slide;
   state.live.slide = live;
   state.live.playback = live?.media ? state.playback : null;
   const audible = live?.media?.kind === 'video';
-  paintStage(stage, { look: state.live.look, slide, blank: false, hideText: false, playback: state.playback, silent: studio || !audible || live !== slide }, animate);
+  if (!studio && remoteProjection?.slide) {
+    paintStage(stage, { ...remoteProjection, look: state.live.look, silent: true, mediaUrl: sharedMediaUrl }, animate);
+  } else {
+    paintStage(stage, { look: state.live.look, slide, blank: false, hideText: false, playback: state.playback, silent: studio || !audible || live !== slide }, animate);
+  }
   paintLiveMonitor(liveChanged);
   paintAmbient(slide);
   renderMediaBar();
-  if (sessionReady) postLive();
+  if (publish || DESKTOP) postLive();
   renderMonitorMeta();
   markStrip();
   const liveItem = state.onAir ? state.liveAt?.item : null;
@@ -2843,7 +3007,7 @@ function renderMonitorMeta() {
   const studio = studioOn();
   const connected = state.outputConnected;
   const label = slide ? slideLabel(state.item, state.previewIndex) : '';
-  const remoteSlide = studio && !canPublishLive ? remoteProjection?.slide : null;
+  const remoteSlide = remoteProjection?.slide;
   const projecting = on || !!remoteSlide;
   const liveLabel = remoteSlide
     ? (remoteSlide.ref || remoteSlide.label || 'Proyección activa')
@@ -2851,16 +3015,16 @@ function renderMonitorMeta() {
   const previewIsLive = on && !studio;
   // Al final, la «siguiente» es la misma que está en vivo: no hay nada más que pasar.
   const noNext = studio && on && state.liveAt?.item === state.item && state.liveAt.i === state.previewIndex;
-  $('#monitorEmpty').hidden = !!slide;
+  $('#monitorEmpty').hidden = !!slide || (!!remoteSlide && !studio);
   const tag = $('#monitorLabel');
   tag.textContent = previewIsLive ? 'En vivo' : 'Vista previa';
   tag.classList.toggle('live', previewIsLive);
   $('#obsChip').hidden = !previewIsLive;
-  $('#monitorRef').textContent = noNext ? 'No hay más diapositivas' : label;
+  $('#monitorRef').textContent = noNext ? 'No hay más diapositivas' : previewIsLive && remoteSlide ? liveLabel : label;
   $('#monitor').classList.toggle('on-air', previewIsLive);
   $('#monitor').classList.toggle('is-end', noNext);
   const btn = $('#liveBtn');
-  btn.disabled = !slide || noNext;
+  btn.disabled = (!slide && !previewIsLive) || noNext;
   btn.setAttribute('aria-pressed', String(previewIsLive));
   $('span', btn).textContent = studio ? (on ? 'Pasar a la siguiente' : 'Poner en vivo') : on ? 'En vivo · Apagar' : 'Poner en vivo';
   $('#prevBtn').disabled = studio && on && state.liveAt ? !target(-1, state.liveAt.item, state.liveAt.i) : !target(-1);
@@ -3032,7 +3196,7 @@ const itemMediaIds = (it) => (!it ? [] : it.kind === 'media' ? [it.media.id] : i
 function resyncServer() {
   uploadedMedia.clear();
   [...new Set([...itemMediaIds(state.liveAt?.item), ...itemMediaIds(state.item)])].forEach(uploadMedia);
-  postLive();
+  if (DESKTOP) postLive();
 }
 
 function consoleMediaUrl(id) {
@@ -3156,8 +3320,10 @@ function saveText() {
 }
 
 function clearItemIf(test) {
-  if (state.liveAt && test(state.liveAt.item)) { state.liveAt = null; state.onAir = false; update(false); }
-  if (state.item && test(state.item)) { state.item = null; state.onAir = false; renderStrip(); update(false); }
+  const clearingLive = state.onAir && state.liveAt && test(state.liveAt.item);
+  if (state.liveAt && test(state.liveAt.item)) { state.liveAt = null; state.onAir = false; }
+  if (state.item && test(state.item)) { state.item = null; renderStrip(); }
+  update(false, clearingLive);
 }
 
 function deleteText(t) {
@@ -3275,7 +3441,7 @@ function bindMediaBar() {
     if (lv) { lv.volume = m.volume; lv.muted = m.muted; }
     setVolumeUi($('#mbMute'), e.target, m.volume, m.muted);
     persistMediaSoon();
-    postLive();
+    if (state.onAir && state.liveAt?.item.media === m) update(false, true);
   });
   $('#mbMute').addEventListener('click', () => {
     const m = media();
@@ -3374,6 +3540,7 @@ function bindAudioBar() {
 /* Resplandor ambiental detrás de la pantalla: da color al vidrio de los controles. */
 let ambientStage = null;
 function paintAmbient(slide) {
+  if (isCompact()) return;
   const amb = $('#ambient');
   if (!ambientStage) { ambientStage = createStage(); ambientStage.classList.add('mini'); amb.append(ambientStage); }
   const media = slide?.media;
@@ -3509,7 +3676,10 @@ function refreshSong(song) {
     const item = isThis(state.item) ? state.item : makeSongItem(song);
     state.liveAt = { item, i: clamp(state.liveAt.i, 0, item.slides.length - 1) };
   }
-  if (isThis(state.item) || isThis(state.liveAt?.item)) { renderStrip(); update(false); }
+  if (isThis(state.item) || isThis(state.liveAt?.item)) {
+    renderStrip();
+    update(false, state.onAir && isThis(state.liveAt?.item));
+  }
   renderLibrary();
 }
 
@@ -3546,8 +3716,7 @@ function hideHymn(song) {
 }
 
 function clearSongFromScreen(song) {
-  if (state.liveAt?.item.kind === 'song' && state.liveAt.item.song === song) { state.liveAt = null; state.onAir = false; update(false); }
-  if (state.item?.kind === 'song' && state.item.song === song) { state.item = null; state.onAir = false; renderStrip(); update(false); }
+  clearItemIf(item => item.kind === 'song' && item.song === song);
 }
 
 function initSongEditorExtras() {
@@ -3687,6 +3856,7 @@ function setLook(patch) {
   syncLookControls();
   applyRootRatio();
   update(false);
+  publishAppearance();
 }
 
 let lookFrame = 0;
@@ -3782,7 +3952,7 @@ async function readImage(file) {
 
 function refitStages() {
   if (stage) fitStage(stage, state.live.look);
-  if (liveStage) fitStage(liveStage, remoteProjection?.look || state.live.look);
+  if (liveStage) fitStage(liveStage, state.live.look);
 }
 
 function setInspector(open, { focus = false } = {}) {
@@ -4265,9 +4435,9 @@ function bindEvents() {
     } else if (a === 'delete-deck' && it?.kind === 'deck') deleteDeck(it.deck);
     else if (a === 'delete-text' && it?.kind === 'text') deleteText(it.text);
     else if (a === 'delete-media' && it?.kind === 'media') deleteMedia(it.media.id);
-    else if (a === 'fit' && it?.kind === 'media') { it.media.fit = b.dataset.value; persistMedia(); renderStrip(); update(false); }
-    else if (a === 'loop' && it?.kind === 'media') { it.media.loop = !it.media.loop; persistMedia(); renderStrip(); update(false); }
-    else if (a === 'mute' && it?.kind === 'media') { it.media.muted = !it.media.muted; persistMedia(); renderStrip(); update(false); }
+    else if (a === 'fit' && it?.kind === 'media') { it.media.fit = b.dataset.value; persistMedia(); renderStrip(); update(false, state.onAir && state.liveAt?.item.media === it.media); }
+    else if (a === 'loop' && it?.kind === 'media') { it.media.loop = !it.media.loop; persistMedia(); renderStrip(); update(false, state.onAir && state.liveAt?.item.media === it.media); }
+    else if (a === 'mute' && it?.kind === 'media') { it.media.muted = !it.media.muted; persistMedia(); renderStrip(); update(false, state.onAir && state.liveAt?.item.media === it.media); }
     else if (a === 'play' && it?.kind === 'media') setPlayback({ playing: !(state.playback.id === it.media.id && state.playback.playing) });
     else if (a === 'restart' && it?.kind === 'media') setPlayback({ position: 0, playing: true });
     else if (a === 'track-manual' && pendingTrack) openEditor(null, { title: pendingTrack.title, author: pendingTrack.artist });
@@ -4466,10 +4636,12 @@ function setStudio(on) {
     else { state.item = item; state.previewIndex = i; renderStrip(); renderLibBody(); syncGotoFromItem(); }
   }
   applyStudio();
-  watchStudioProjection();
-  // Al pasar a dos pantallas con algo en vivo, a la izquierda aparece directamente la siguiente.
-  if (on && studioOn() && state.onAir && state.liveAt) sendToLive(state.liveAt.item, state.liveAt.i);
-  else update(false);
+  if (on && state.onAir && state.liveAt) {
+    const next = target(1, state.liveAt.item, state.liveAt.i);
+    if (next) loadItem(next.item, next.i);
+  }
+  update(false);
+  publishAppearance();
   refitStages();
 }
 
@@ -4608,19 +4780,22 @@ function initResizer() {
 }
 
 /* ───────────── Tema de la app ───────────── */
+function selectTheme(theme) {
+  const seg = $('#themeSeg');
+  applyTheme(theme);
+  $$('[data-theme-opt]', seg).forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.themeOpt === theme)));
+  placeSegmentThumb(seg);
+}
+
 function initThemeSelector() {
   const seg = $('#themeSeg');
-  const select = (theme) => {
-    applyTheme(theme);
-    $$('[data-theme-opt]', seg).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeOpt === theme)));
-    placeSegmentThumb(seg);
-  };
-  select(readPreference('theme', 'auto'));
+  selectTheme(readPreference('theme', 'auto'));
   seg.addEventListener('click', (e) => {
     const b = e.target.closest('[data-theme-opt]');
     if (!b) return;
-    select(b.dataset.themeOpt);
+    selectTheme(b.dataset.themeOpt);
     storePreference('theme', b.dataset.themeOpt);
+    publishAppearance();
   });
 }
 
@@ -4727,11 +4902,11 @@ function startConsole() {
   initVerseEditor();
   initLayoutEditor();
   initStudio();
-  // Al volver a entrar, OBS y el proyector se ponen al día al instante: lo que está en vivo y sus
-  // imágenes o videos (si el servidor se reinició, los perdió). Mientras tanto nunca se apagaron.
+  // Recupera los archivos del navegador y sigue la proyección que conserva el servidor.
   auth.onUnlock = () => {
     $('#panelLanBtn').hidden = (DESKTOP || !localConsole()) && !auth.panelUrls.length;
     resyncServer();
+    if (initialProjectionApplied && lastLiveSnapshot?.state === null) restoreEmptyProjection();
     scheduleSettingsSave(0);
     if (settingsReadFailed) {
       settingsReadFailed = false;
@@ -4743,9 +4918,9 @@ function startConsole() {
         },
       });
     }
-    watchStudioProjection();
+    watchProjection();
   };
-  auth.keepAlive = () => state.onAir;
+  auth.keepAlive = () => state.onAir && !remoteProjection;
 }
 
 if (IS_OUTPUT) bootOutput();

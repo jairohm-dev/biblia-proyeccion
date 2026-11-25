@@ -174,6 +174,13 @@ while :; do sleep 0.1; done
   await expect(401, '/api/live', { ...signed('/api/live', live), body: '{}' });
   const projected = await expect(200, '/api/live?rev=-1', { remote: false });
   assert.equal(JSON.parse(projected.text).state.slide.text, 'Control remoto de prueba');
+  const previousRev = JSON.parse(projected.text).rev;
+  await Promise.all([
+    expect(204, '/api/live', signed('/api/live', live)),
+    expect(204, '/api/live', signed('/api/live', live)),
+  ]);
+  const afterConcurrent = await expect(200, '/api/live?rev=-1', { remote: false });
+  assert.equal(JSON.parse(afterConcurrent.text).rev, previousRev + 2);
   await expect(200, `/api/live?rev=-1&k=${viewer}`);
   await expect(403, `/api/live?rev=-1&k=${hex(16)}`);
   await expect(204, '/api/media?id=prueba', signed('/api/media?id=prueba', 'media', { 'Content-Type': 'image/png' }));

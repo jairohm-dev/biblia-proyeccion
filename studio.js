@@ -128,11 +128,17 @@ function deleteDeck(deck) {
 }
 
 function refreshDeckItem(deck, index = state.previewIndex) {
-  if (state.item?.kind !== 'deck' || state.item.deck !== deck) return;
-  state.item = makeDeckItem(deck);
-  state.previewIndex = clamp(index, 0, state.item.slides.length - 1);
-  renderStrip();
-  update(false);
+  const preview = state.item?.kind === 'deck' && state.item.deck === deck;
+  const live = state.liveAt?.item.kind === 'deck' && state.liveAt.item.deck === deck;
+  if (!preview && !live) return;
+  const item = makeDeckItem(deck);
+  if (preview) {
+    state.item = item;
+    state.previewIndex = clamp(index, 0, item.slides.length - 1);
+    renderStrip();
+  }
+  if (live) state.liveAt = { item, i: clamp(state.liveAt.i, 0, item.slides.length - 1) };
+  update(false, live && state.onAir);
 }
 
 /* ───────────── Pestaña Estudio ───────────── */

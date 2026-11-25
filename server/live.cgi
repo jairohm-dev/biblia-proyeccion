@@ -6,9 +6,7 @@
 . "$(dirname "$0")/lib.sh"
 
 check_host
-state="$RUN/live.json"
-rev="$RUN/live.rev"
-[ -f "$rev" ] || echo 0 > "$rev"
+state="$RUN/proyeccion.json"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
   check_control
@@ -16,8 +14,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
   # Lleva la imagen de fondo en base64: una foto de 1920 px puede pesar varios MB.
   read_body 16777216
   verify_signature
-  mv "$BODY" "$state"
-  echo $(( $(cat "$rev") + 1 )) > "$RUN/live.rev.$$" && mv "$RUN/live.rev.$$" "$rev"
+  writer="$(dirname "$0")/live-write.sh"
+  if command -v lockf >/dev/null; then
+    lockf -k -t 5 "$RUN/live.lock" sh "$writer" "$state" "$BODY" || reply '503 Service Unavailable' '{"error":"proyeccion"}'
+  else
+    flock -w 5 "$RUN/live.lock" sh "$writer" "$state" "$BODY" || reply '503 Service Unavailable' '{"error":"proyeccion"}'
+  fi
   printf 'Status: 204 No Content\r\n\r\n'
   exit 0
 fi
@@ -28,14 +30,19 @@ want=$(printf '&%s' "$QUERY_STRING" | sed -n 's/.*&rev=\([0-9][0-9]*\).*/\1/p')
 # Espera a que cambie lo que está en vivo (hasta 20 s). Mira cada décima de segundo y lee la revisión
 # con «read» (no lanza procesos): el proyector y OBS ven el cambio casi al instante sin cargar el equipo.
 i=0
-read -r cur < "$rev"
+read_revision() {
+  cur=0
+  if [ -f "$state" ] && IFS= read -r line < "$state"; then
+    cur=${line#*:}
+    cur=${cur%,}
+  fi
+}
+read_revision
 while [ -n "$want" ] && [ "$cur" = "$want" ] && [ "$i" -lt 200 ]; do
   sleep 0.1
   i=$((i + 1))
-  read -r cur < "$rev"
+  read_revision
 done
 
 printf 'Content-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n'
-printf '{"rev":%s,"state":' "$(cat "$rev")"
-if [ -s "$state" ]; then cat "$state"; else printf 'null'; fi
-printf '}'
+if [ -f "$state" ]; then cat "$state"; else printf '{"rev":0,"state":null}'; fi

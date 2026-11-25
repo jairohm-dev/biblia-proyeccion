@@ -1396,7 +1396,7 @@ code { font: 500 0.92em ui-monospace, "SF Mono", Menlo, monospace; }
   .monitors.studio .monitor-controls.single { grid-row: 4; }
   .monitors.studio:has(#mediaBar:not([hidden])) .monitor-controls.single { grid-row: 5; }
   .monitors.studio #mediaBar { position: static; }
-  .monitors.studio .ambient { display: none; }
+  .monitors .ambient { display: none; }
   .strip { border-top: 1px solid var(--separator); }
   .strip-head { padding: 14px var(--gutter) 10px; }
   .slides {
