@@ -51,9 +51,10 @@ Si falla la conexión con Cloudflare, Biblia abre el panel local y muestra el av
 - Ver la proyección o descargar medios por el dominio remoto requiere la llave de visor
   incluida en los enlaces de OBS y del proyector generados tras entrar. Un enlace de visor
   permite ver, pero no controlar.
-- Al entrar, cada navegador recibe la apariencia de la proyección, el tema, el modo estudio y las
-  preferencias de tamaño guardadas en el servidor. Las canciones, presentaciones y archivos de la
-  biblioteca se guardan en el navegador que los agregó.
+- Al entrar, cada navegador recibe la apariencia, el tema, el modo **Previa + En vivo**, la versión
+  de la Biblia y las preferencias de tamaño guardadas en `ajustes.json` en el equipo servidor.
+- Se comparten las canciones guardadas, carpetas, textos, presentaciones y cambios en los himnarios.
+  Los archivos de imagen, audio y video de la biblioteca se guardan en el navegador que los agregó.
 - El proyector y OBS reciben lo que se envía con **Poner en vivo**. Coordina quién controla la salida
   cuando hay varias personas conectadas.
 - El audio que la aplicación reproduce en la consola sale de la computadora que la controla,

@@ -72,7 +72,7 @@
         <div class="toolbar-actions">
           <label class="studio-switch" title="Muestra por separado la vista previa y lo que está en vivo">
             <span>Previa + En vivo</span>
-            <span class="switch"><input type="checkbox" id="studioSwitch" role="switch"></span>
+            <span class="switch"><input type="checkbox" id="studioSwitch" role="switch" aria-label="Vista previa y En vivo"></span>
           </label>
           <div class="segmented theme-seg" id="themeSeg" role="group" aria-label="Tema de la app">
             <button type="button" data-theme-opt="light" aria-label="Tema claro" title="Claro"><i data-icon="sun"></i></button>
@@ -95,7 +95,7 @@
             <span class="monitor-ref" id="monitorRef"></span>
           </div>
           <div class="monitor" id="monitor">
-            <div class="monitor-empty" id="monitorEmpty">Elige un capítulo, un himno o una canción en la biblioteca</div>
+            <div class="monitor-empty" id="monitorEmpty">Elige un pasaje, canción o presentación</div>
             <div class="media-bar" id="mediaBar" role="group" aria-label="Reproducción del video" hidden>
               <button class="mb-btn" id="mbPlay" type="button" aria-label="Reproducir"><i data-icon="play"></i></button>
               <button class="mb-btn" id="mbRestart" type="button" aria-label="Desde el inicio"><i data-icon="restart"></i></button>
@@ -118,7 +118,7 @@
             <span class="monitor-ref" id="liveRef"></span>
           </div>
           <div class="monitor" id="liveMonitor">
-            <div class="monitor-empty" id="liveEmpty">Nada en pantalla. Pulsa → o «Poner en vivo».</div>
+            <div class="monitor-empty" id="liveEmpty">Sin proyección</div>
           </div>
           <div class="monitor-controls single">
             <button class="toggle" id="clearLive" type="button"><i data-icon="close"></i><span>Quitar de la pantalla</span><kbd>B</kbd></button>
@@ -445,6 +445,10 @@
         <div class="wl-actions">
           <button class="link-btn" type="button" data-wl="back" id="wlBack">Cancelar</button>
           <button class="btn-primary wl-main" type="submit" id="wlSubmit">Guardar</button>
+        </div>
+        <div class="wl-sync" id="wlSync" hidden>
+          <span class="wl-sync-text"><i data-icon="globe"></i><span id="wlSyncText">Biblioteca compartida</span></span>
+          <button class="link-inline" type="button" data-wl="sync-now">Buscar cambios</button>
         </div>
         <div class="wl-security" id="wlSecurity">
           <button class="link-inline" type="button" data-wl="change-pin"><i data-icon="lock"></i>Cambiar el PIN</button>

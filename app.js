@@ -80,6 +80,10 @@ const KEY = {
   look: 'easybiblia.look', session: 'easybiblia.sesion', mine: 'easybiblia.canciones', folders: 'easybiblia.carpetas',
   media: 'easybiblia.medios', texts: 'easybiblia.textos', decks: 'easybiblia.presentaciones', ui: 'easybiblia.ui2',
   hymnEdits: 'easybiblia.himnos.cambios', hymnHidden: 'easybiblia.himnos.ocultos',
+  hymnShown: 'easybiblia.himnos.visibles',
+  deleted: 'easybiblia.borrados', revived: 'easybiblia.revividos',
+  libraryVersions: 'biblia.biblioteca.versiones',
+  libraryUpdatedAt: 'biblia.biblioteca.fecha',
 };
 
 const SPANISH_BOOKS = ['Génesis', 'Éxodo', 'Levítico', 'Números', 'Deuteronomio', 'Josué', 'Jueces', 'Rut', '1 Samuel', '2 Samuel',
@@ -256,10 +260,15 @@ function loadLook() {
 const PREFERENCES = {
   look: KEY.look, theme: 'biblia.theme', studio: 'biblia.studio',
   libraryWidth: 'easybiblia.libWidth', monitorHeight: 'biblia.monH',
+  bibleId: 'biblia.version', inspectorTab: 'biblia.apariencia.seccion',
 };
+const SETTINGS_DRAFT = 'biblia.ajustes.pendientes';
+const INSPECTOR_TABS = ['text', 'ref', 'bg', 'screen', 'anim'];
 const localConsole = () => ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 let sharedSettings = {};
+let sharedLibrary = null;
 let pendingSettings = {};
+let sendingSettings = {};
 let settingsTimer = 0;
 let settingsBusy = false;
 let settingsAvailable = true;
@@ -277,9 +286,13 @@ function cleanSettings(value) {
   }
   if (['auto', 'light', 'dark'].includes(value.theme)) settings.theme = value.theme;
   if (typeof value.studio === 'boolean') settings.studio = value.studio;
+  if (bibleMeta(value.bibleId)) settings.bibleId = value.bibleId;
+  if (INSPECTOR_TABS.includes(value.inspectorTab)) settings.inspectorTab = value.inspectorTab;
   for (const key of ['libraryWidth', 'monitorHeight']) {
     if (value[key] === null || (Number.isFinite(value[key]) && value[key] > 0)) settings[key] = value[key];
   }
+  const library = cleanLibrary(value.library);
+  if (library) settings.library = library;
   return settings;
 }
 
@@ -289,24 +302,262 @@ function mergeSettings(settings, patch) {
   return merged;
 }
 
+/* ───────────── Biblioteca compartida (canciones, carpetas, textos y presentaciones) ─────────────
+   El contenido de texto viaja en el mismo documento de ajustes que la apariencia. Los archivos de
+   imagen, video y audio se quedan en el equipo donde se añadieron: pesan demasiado para el JSON.
+   Las colecciones se unen por «id» y las eliminaciones se recuerdan para que no reaparezcan al
+   abrir otro equipo. */
+const LIB_COLLECTIONS = ['mine', 'folders', 'texts', 'decks'];
+const LIB_DELETED = [...LIB_COLLECTIONS, 'hymnEdits'];
+const LIB_VERSIONED = [...LIB_DELETED, 'hymnVisibility'];
+const emptyDeleted = () => Object.fromEntries(LIB_DELETED.map((key) => [key, {}]));
+const safeKey = (key) => typeof key === 'string' && !['__proto__', 'constructor', 'prototype'].includes(key);
+
+function cleanLibrary(value) {
+  if (!value || typeof value !== 'object') return null;
+  const lib = { v: 1, updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : 0 };
+  for (const key of LIB_COLLECTIONS) {
+    lib[key] = Array.isArray(value[key])
+      ? value[key].filter((item) => item && typeof item === 'object' && safeKey(item.id))
+      : [];
+  }
+  lib.hymnEdits = {};
+  if (value.hymnEdits && typeof value.hymnEdits === 'object') {
+    for (const [key, edit] of Object.entries(value.hymnEdits)) {
+      if (safeKey(key) && (edit === null || (edit && typeof edit === 'object'))) lib.hymnEdits[key] = edit;
+    }
+  }
+  lib.hymnHidden = Array.isArray(value.hymnHidden) ? value.hymnHidden.filter((key) => typeof key === 'string') : [];
+  lib.hymnShown = Array.isArray(value.hymnShown) ? value.hymnShown.filter((key) => typeof key === 'string') : [];
+  lib.deleted = emptyDeleted();
+  lib.revived = emptyDeleted();
+  lib.versions = {};
+  for (const field of ['deleted', 'revived', 'versions']) {
+    const source = value[field];
+    if (!source || typeof source !== 'object') continue;
+    for (const kind of field === 'versions' ? LIB_VERSIONED : LIB_DELETED) {
+      const marks = source[kind];
+      if (!marks || typeof marks !== 'object') continue;
+      for (const [id, at] of Object.entries(marks)) {
+        if (safeKey(id) && Number.isFinite(at)) (lib[field][kind] ??= {})[id] = at;
+      }
+    }
+  }
+  return lib;
+}
+
+function libraryRecords(lib, kind) {
+  if (kind === 'hymnEdits') return new Map(Object.entries(lib.hymnEdits));
+  if (kind === 'hymnVisibility') return new Map([
+    ...lib.hymnHidden.map(id => [id, true]), ...lib.hymnShown.map(id => [id, false]),
+  ]);
+  return new Map(lib[kind].map(item => [item.id, item]));
+}
+
+function mergeLibraryDates(a = {}, b = {}) {
+  const dates = { ...a };
+  for (const [id, at] of Object.entries(b)) dates[id] = Math.max(dates[id] || 0, at);
+  return dates;
+}
+
+function mergeLibrary(server, local) {
+  const a = cleanLibrary(server);
+  const b = cleanLibrary(local);
+  if (!a) return b;
+  if (!b) return a;
+  const out = { v: 1, updatedAt: Math.max(a.updatedAt, b.updatedAt) };
+  out.deleted = emptyDeleted();
+  out.revived = emptyDeleted();
+  out.versions = {};
+  for (const kind of LIB_DELETED) {
+    out.deleted[kind] = mergeLibraryDates(a.deleted[kind], b.deleted[kind]);
+    out.revived[kind] = mergeLibraryDates(a.revived[kind], b.revived[kind]);
+    // Si se deshizo una eliminación después de borrar, el elemento vuelve aunque el otro equipo
+    // todavía recuerde el borrado.
+    for (const [id, at] of Object.entries(out.revived[kind])) {
+      if (at >= (out.deleted[kind][id] || 0)) delete out.deleted[kind][id];
+    }
+  }
+  for (const kind of LIB_VERSIONED) {
+    const items = libraryRecords(a, kind);
+    for (const [id, item] of libraryRecords(b, kind)) {
+      if (!items.has(id) || (b.versions[kind]?.[id] || 0) > (a.versions[kind]?.[id] || 0)) items.set(id, item);
+    }
+    for (const id of Object.keys(out.deleted[kind] || {})) items.delete(id);
+    out.versions[kind] = mergeLibraryDates(a.versions[kind], b.versions[kind]);
+    if (kind === 'hymnEdits') out.hymnEdits = Object.fromEntries(items);
+    else if (kind === 'hymnVisibility') {
+      out.hymnHidden = [...items.keys()].filter(id => items.get(id));
+      out.hymnShown = [...items.keys()].filter(id => !items.get(id));
+    } else out[kind] = [...items.values()];
+  }
+  return out;
+}
+
+const libraryHasContent = (lib) => !!lib && (LIB_COLLECTIONS.some((key) => lib[key]?.length) ||
+  Object.keys(lib.hymnEdits || {}).length > 0 || lib.hymnHidden.length || lib.hymnShown.length ||
+  ['deleted', 'revived'].some((field) => LIB_DELETED.some((key) => Object.keys(lib[field]?.[key] || {}).length > 0)));
+const librarySignature = (lib) => JSON.stringify([lib?.updatedAt || 0,
+  ...LIB_COLLECTIONS.map((key) => lib?.[key] || []), lib?.hymnEdits || {}, lib?.hymnHidden || [],
+  lib?.hymnShown || [], lib?.deleted || {}, lib?.revived || {}, lib?.versions || {}]);
+
+function localLibrary() {
+  return {
+    v: 1, updatedAt: store.get(KEY.libraryUpdatedAt, 0),
+    mine: store.get(KEY.mine, []), folders: store.get(KEY.folders, []),
+    texts: store.get(KEY.texts, []), decks: store.get(KEY.decks, []),
+    hymnEdits: store.get(KEY.hymnEdits, {}) || {}, hymnHidden: store.get(KEY.hymnHidden, []),
+    hymnShown: store.get(KEY.hymnShown, []),
+    deleted: store.get(KEY.deleted, {}) || {}, revived: store.get(KEY.revived, {}) || {},
+    versions: store.get(KEY.libraryVersions, {}) || {},
+  };
+}
+
+function applyLibraryToLocal(lib) {
+  if (!lib) return;
+  for (const key of LIB_COLLECTIONS) store.set(KEY[key], lib[key]);
+  store.set(KEY.hymnEdits, lib.hymnEdits);
+  store.set(KEY.hymnHidden, lib.hymnHidden);
+  store.set(KEY.hymnShown, lib.hymnShown);
+  store.set(KEY.deleted, lib.deleted);
+  store.set(KEY.revived, lib.revived);
+  store.set(KEY.libraryVersions, lib.versions);
+  store.set(KEY.libraryUpdatedAt, lib.updatedAt);
+}
+
+let libraryBaseline = {};
+let libraryVersions = {};
+let libraryUpdatedAt = 0;
+
+function rememberLibrary(lib) {
+  libraryBaseline = Object.fromEntries(LIB_VERSIONED.map(kind =>
+    [kind, new Map([...libraryRecords(lib, kind)].map(([id, item]) => [id, JSON.stringify(item)]))]));
+}
+
+function librarySnapshot() {
+  return cleanLibrary({
+    v: 1, updatedAt: libraryUpdatedAt,
+    mine: state.mine || [], folders: state.folders || [], texts: state.texts || [], decks: state.decks || [],
+    hymnEdits: state.hymnEdits || {}, hymnHidden: [...(state.hymnHidden || [])],
+    hymnShown: [...(state.hymnShown || [])],
+    deleted: state.deleted || emptyDeleted(), revived: state.revived || emptyDeleted(),
+    versions: libraryVersions,
+  });
+}
+
+// Copia de la biblioteca que se envía al servidor. Se llama al guardar cualquier canción, carpeta,
+// texto o presentación, y al eliminar.
+function syncLibrary() {
+  if (DESKTOP || !settingsAvailable) return;
+  const snapshot = librarySnapshot();
+  snapshot.updatedAt = Math.max(Date.now(), snapshot.updatedAt + 1);
+  for (const kind of LIB_VERSIONED) {
+    for (const [id, item] of libraryRecords(snapshot, kind)) {
+      if (libraryBaseline[kind]?.get(id) !== JSON.stringify(item)) {
+        (snapshot.versions[kind] ??= {})[id] = snapshot.updatedAt;
+      }
+    }
+  }
+  rememberLibrary(snapshot);
+  libraryVersions = snapshot.versions;
+  libraryUpdatedAt = snapshot.updatedAt;
+  store.set(KEY.libraryVersions, snapshot.versions);
+  store.set(KEY.libraryUpdatedAt, snapshot.updatedAt);
+  queueSettings({ library: structuredClone(snapshot) });
+  checkpointSettings();
+}
+
+function markLibraryDeleted(kind, id) {
+  if (!id) return;
+  state.deleted ??= emptyDeleted();
+  state.deleted[kind] ??= {};
+  state.deleted[kind][id] = Date.now();
+  if (state.revived?.[kind]) delete state.revived[kind][id];
+  store.set(KEY.deleted, state.deleted);
+  store.set(KEY.revived, state.revived || emptyDeleted());
+}
+
+function markLibraryAlive(kind, id) {
+  if (!id) return;
+  state.deleted ??= emptyDeleted();
+  state.revived ??= emptyDeleted();
+  delete state.deleted[kind]?.[id];
+  state.revived[kind] ??= {};
+  state.revived[kind][id] = Date.now();
+  store.set(KEY.deleted, state.deleted);
+  store.set(KEY.revived, state.revived);
+}
+
+
 async function readSharedSettings() {
-  const res = await signedFetch('api/settings?accion=leer', { timeout: 4500 });
+  const res = await signedFetch('api/settings?accion=leer', { timeout: 12000 });
   if ([404, 405].includes(res.status)) { settingsAvailable = false; return null; }
   const revision = /^"(0|[0-9a-f]{64})"$/.exec(res.headers.get('etag') || '')?.[1];
   if (!res.ok || !revision) throw new Error('ajustes');
-  return { revision, settings: cleanSettings(await res.json().catch(() => ({}))) };
+  return { revision, settings: cleanSettings(await res.json()) };
 }
 
 async function preloadSharedSettings() {
   if (DESKTOP) return;
+  pendingSettings = cleanSettings(store.get(SETTINGS_DRAFT, {}));
   const snapshot = await readSharedSettings().catch(() => null);
-  if (!snapshot) return;
-  sharedSettings = snapshot.settings;
-  if (snapshot.revision === '0' && localConsole()) {
-    // El primer navegador del equipo servidor conserva los ajustes de la versión anterior.
-    pendingSettings = cleanSettings(Object.fromEntries(Object.entries(PREFERENCES).map(([key, path]) => [key, store.get(path)])));
+  if (snapshot && localConsole()) {
+    const legacy = store.get(KEY.ui, {}) || {};
+    const saved = Object.fromEntries(Object.entries(PREFERENCES).map(([key, path]) => [key, store.get(path)]));
+    saved.bibleId ??= legacy.bibleId;
+    saved.inspectorTab ??= legacy.inspTab;
+    // Importa preferencias añadidas en esta versión sin pisar las que ya están en el servidor.
+    const missing = Object.fromEntries(Object.entries(cleanSettings(saved)).filter(([key]) =>
+      !Object.hasOwn(snapshot.settings, key)));
+    pendingSettings = mergeSettings(missing, pendingSettings);
   }
+  // La biblioteca se une con lo que ya había en este equipo y con lo que hay en el servidor.
+  // Así, un equipo nuevo recibe las canciones y presentaciones, y el equipo que ya las tenía no las pierde.
+  const serverLibrary = snapshot?.settings.library;
+  const mergedLibrary = mergeLibrary(serverLibrary, mergeLibrary(pendingSettings.library, localLibrary()));
+  sharedLibrary = mergedLibrary;
+  delete pendingSettings.library;
+  if (mergedLibrary && libraryHasContent(mergedLibrary)) {
+    applyLibraryToLocal(mergedLibrary);
+    if (librarySignature(mergedLibrary) !== librarySignature(serverLibrary)) pendingSettings.library = mergedLibrary;
+  }
+  sharedSettings = mergeSettings(snapshot?.settings || {}, pendingSettings);
+  delete sharedSettings.library;
   for (const [key, value] of Object.entries(sharedSettings)) store.set(PREFERENCES[key], value);
+  checkpointSettings();
+}
+
+function checkpointSettings() {
+  if (DESKTOP || !settingsAvailable) return;
+  // El borrador guarda solo preferencias: la biblioteca ya vive en sus propias claves y duplicarla
+  // aquí podría llenar el almacenamiento del navegador.
+  const draft = mergeSettings(sendingSettings, pendingSettings);
+  delete draft.library;
+  store.set(SETTINGS_DRAFT, draft);
+}
+
+// Trae lo último del servidor sin recargar la página: se usa desde «Iglesia y seguridad».
+async function pullSharedChanges() {
+  const snapshot = await readSharedSettings().catch(() => null);
+  if (!snapshot) return false;
+  const merged = mergeLibrary(snapshot.settings.library, localLibrary());
+  applyLibraryToLocal(merged);
+  const preferences = mergeSettings(snapshot.settings, mergeSettings(sendingSettings, pendingSettings));
+  for (const [key, value] of Object.entries(preferences)) {
+    if (key === 'library') continue;
+    store.set(PREFERENCES[key], key === 'look' ? { ...store.get(KEY.look, {}), ...value } : value);
+  }
+  if (librarySignature(merged) !== librarySignature(snapshot.settings.library)) {
+    queueSettings({ library: merged });
+    checkpointSettings();
+  }
+  return true;
+}
+
+function queueSettings(patch) {
+  if (DESKTOP || !settingsAvailable) return;
+  pendingSettings = mergeSettings(pendingSettings, patch);
+  scheduleSettingsSave();
 }
 
 function scheduleSettingsSave(delay = 250) {
@@ -319,17 +570,33 @@ async function savePendingSettings() {
   if (auth.mode !== 'open') return;
   settingsBusy = true;
   const patch = pendingSettings;
+  sendingSettings = patch;
   pendingSettings = {};
+  checkpointSettings();
   let delay = 250;
   try {
     const snapshot = await readSharedSettings();
     if (!snapshot) return;
     const { revision, settings } = snapshot;
+    const body = mergeSettings(settings, patch);
+    if (patch.library) body.library = mergeLibrary(settings.library, patch.library);
     const res = await signedFetch(`api/settings?accion=guardar&revision=${revision}`, {
-      body: JSON.stringify(mergeSettings(settings, patch)), headers: { 'Content-Type': 'application/json' }, timeout: 8000,
+      body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' }, timeout: 20000,
     });
-    if (!res.ok) {
-      if (res.status === 413) { toast('La imagen de fondo es demasiado grande para compartirla.'); return; }
+    if (res.ok) {
+      if (body.library) applyLibraryToLocal(mergeLibrary(body.library, localLibrary()));
+    } else {
+      if (res.status === 413) {
+        const rest = { ...patch };
+        if (rest.library) { delete rest.library; toast('La biblioteca es demasiado grande para compartirla entre equipos.'); }
+        if (rest.look?.bgImage) {
+          const { bgImage, ...look } = rest.look;
+          toast('La imagen de fondo es demasiado grande para compartirla.');
+          rest.look = look;
+        }
+        pendingSettings = mergeSettings(rest, pendingSettings);
+        return;
+      }
       if (res.status !== 409) delay = 4000;
       pendingSettings = mergeSettings(patch, pendingSettings);
     }
@@ -337,6 +604,8 @@ async function savePendingSettings() {
     pendingSettings = mergeSettings(patch, pendingSettings);
     delay = 4000;
   } finally {
+    sendingSettings = {};
+    checkpointSettings();
     settingsBusy = false;
     scheduleSettingsSave(delay);
   }
@@ -344,11 +613,13 @@ async function savePendingSettings() {
 
 function storePreference(key, value) {
   store.set(PREFERENCES[key], value);
-  if (!DESKTOP && settingsAvailable) {
-    pendingSettings[key] = value;
-    scheduleSettingsSave();
-  }
+  queueSettings({ [key]: value });
+  checkpointSettings();
 }
+
+addEventListener('pagehide', checkpointSettings);
+addEventListener('online', () => scheduleSettingsSave(0));
+document.addEventListener('visibilitychange', () => { if (document.hidden) checkpointSettings(); });
 
 /* ───────────── Escenario compartido (vista previa, en vivo y proyector) ───────────── */
 function createStage() {
@@ -510,8 +781,8 @@ function paintStage(stage, view, animate) {
   $('.stage-bg-img', stage).style.backgroundImage = look.bgImage ? `url("${look.bgImage}")` : 'none';
   $('.stage-bg-fill', stage).style.backgroundImage = look.bgImage && look.bgFit === 'blur' ? `url("${look.bgImage}")` : 'none';
   $('.stage-frame', stage).hidden = !look.frame;
-  renderStageMedia(stage, slide?.media || null, view.playback || null, !!view.silent);
-  renderStageDesign(stage, slide?.design || null);
+  renderStageMedia(stage, slide?.media || null, view.playback || null, !!view.silent, view.mediaUrl);
+  renderStageDesign(stage, slide?.design || null, view.mediaUrl);
   stage.classList.toggle('shadow', !!look.shadow);
   stage.classList.toggle('blank', !!view.blank);
   stage.classList.toggle('hide-text', !!view.hideText);
@@ -542,14 +813,14 @@ let soundBlocked = () => {};
 
 const playbackPosition = (pb) => pb.position + (pb.playing ? (Date.now() - pb.at) / 1000 : 0);
 
-function renderStageMedia(stage, media, playback, silent) {
+function renderStageMedia(stage, media, playback, silent, mediaUrl = resolveMedia) {
   const layer = $('.stage-media', stage);
   stage.classList.toggle('has-media', !!media);
   if (!media) {
     if (layer.dataset.id) { layer.replaceChildren(); layer.dataset.id = ''; }
     return;
   }
-  const url = resolveMedia(media.id);
+  const url = mediaUrl(media.id);
   let el = layer.firstElementChild;
   if (layer.dataset.id !== media.id || !el || (url && el.dataset.src !== url)) {
     layer.replaceChildren();
@@ -638,6 +909,20 @@ function fitStage(stage, look) {
 }
 
 /* ───────────── Ventana del proyector (index.html?salida) ───────────── */
+async function readProjection(revision, key) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await fetch(`api/live?rev=${revision}${key}`, { cache: 'no-store', signal: ctrl.signal });
+    if (!res.ok) throw new Error('proyeccion');
+    const data = await res.json();
+    if (!Number.isInteger(data.rev)) throw new Error('proyeccion');
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function bootOutput() {
   const params = new URLSearchParams(location.search);
   const obs = params.has('obs');
@@ -684,18 +969,11 @@ function bootOutput() {
       for (;;) {
         // El servidor responde en 20 s como mucho. Sin este límite, una conexión colgada (Wi-Fi, equipo que
         // despierta) dejaría la salida congelada para siempre, sin ningún error.
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 30000);
         try {
-          const res = await fetch(`api/live?rev=${rev}${key}`, { cache: 'no-store', signal: ctrl.signal });
-          if (!res.ok) throw new Error(`live ${res.status}`);
-          const data = await res.json();
-          if (!Number.isInteger(data.rev)) throw new Error('live');
+          const data = await readProjection(rev, key);
           if (data.rev !== rev) { rev = data.rev; if (data.state) { view = data.state; paint(true); } }
         } catch {
           await sleep(1500);
-        } finally {
-          clearTimeout(timer);
         }
       }
     })();
@@ -760,7 +1038,7 @@ let postFailing = false;
 let canPublishLive = DESKTOP || localConsole();
 
 function postLive() {
-  if (!serverLive || auth.mode !== 'open' || !canPublishLive) return;
+  if (!sessionReady || !serverLive || auth.mode !== 'open' || !canPublishLive) return;
   postDirty = true;
   if (postBusy) return;
   postBusy = true;
@@ -805,6 +1083,9 @@ const state = {
   media: [],
   texts: [],
   decks: [],
+  deleted: {},
+  revived: {},
+  hymnShown: new Set(),
   playback: { id: null, playing: false, position: 0, at: 0 },
 
   tab: 'bible',
@@ -1180,13 +1461,21 @@ function itemFrom(desc) {
 async function bootConsole() {
   hydrateIcons(document);
   state.live.look = loadLook();
-  state.mine = store.get(KEY.mine, []);
-  state.folders = store.get(KEY.folders, []);
+  const savedLibrary = sharedLibrary || cleanLibrary(localLibrary());
+  state.mine = savedLibrary.mine;
+  state.folders = savedLibrary.folders;
   state.media = store.get(KEY.media, []);
-  state.texts = store.get(KEY.texts, []);
-  state.decks = store.get(KEY.decks, []);
-  state.hymnEdits = store.get(KEY.hymnEdits, {}) || {};
-  state.hymnHidden = new Set(store.get(KEY.hymnHidden, []));
+  state.texts = savedLibrary.texts;
+  state.decks = savedLibrary.decks;
+  state.hymnEdits = savedLibrary.hymnEdits;
+  state.hymnHidden = new Set(savedLibrary.hymnHidden);
+  state.hymnShown = new Set(savedLibrary.hymnShown);
+  state.deleted = savedLibrary.deleted;
+  state.revived = savedLibrary.revived;
+  libraryVersions = savedLibrary.versions;
+  libraryUpdatedAt = savedLibrary.updatedAt;
+  rememberLibrary(librarySnapshot());
+  sharedLibrary = null;
   resolveMedia = consoleMediaUrl;
   soundBlocked = (el) => {
     if (el.dataset.warned) return;
@@ -1211,7 +1500,7 @@ async function bootConsole() {
   setupGlassSegments();
   setInspector(false);
   matchMedia('(max-width: 1099px)').addEventListener('change', () => setInspector(inspectorOpen()));
-  setInspTab(ui.inspTab || 'text');
+  setInspTab(readPreference('inspectorTab', ui.inspTab || 'text'));
   setPane(ui.pane || 'library');
   syncLookControls();
   applyRootRatio();
@@ -1231,12 +1520,13 @@ async function bootConsole() {
     state.bundledBible = bible;
     state.hymnals = hymnals.map(hymnalToLibrary);
     try { (await idb.keys()).forEach((k) => state.installed.add(k)); } catch { /* sin IndexedDB: solo la Biblia incluida */ }
-    let loaded = false;
-    if (ui.bibleId && ui.bibleId !== 'rvr1960' && state.installed.has(ui.bibleId)) {
-      const data = await idb.get(ui.bibleId).catch(() => null);
-      if (data) { setBible(data, ui.bibleId); loaded = true; }
+    const version = readPreference('bibleId', ui.bibleId || 'rvr1960');
+    let selected = null;
+    if (bibleMeta(version) && version !== 'rvr1960') {
+      selected = await idb.get(version).catch(() => null);
+      if (!selected && version === sharedSettings.bibleId) selected = await downloadBible(version, { announce: false });
     }
-    if (!loaded) setBible(bible, 'rvr1960');
+    setBible(selected || bible, selected ? version : 'rvr1960');
   } catch (err) {
     state.loadError = String(err.message || err);
     sessionReady = true;
@@ -1299,9 +1589,10 @@ function withHymnEdit(song) {
 function saveHymnEdit(song, data) {
   const o = song.original;
   const same = o && o.title === data.title && (o.author || '') === (data.author || '') && slidesToText(o.slides) === slidesToText(data.slides);
-  if (same) { delete state.hymnEdits[songKey(song)]; Object.assign(song, o, { edited: false }); }
+  if (same) { state.hymnEdits[songKey(song)] = null; Object.assign(song, o, { edited: false }); }
   else { state.hymnEdits[songKey(song)] = data; Object.assign(song, data, { edited: true }); }
   store.set(KEY.hymnEdits, state.hymnEdits);
+  syncLibrary();
 }
 
 function library(id) {
@@ -1475,7 +1766,17 @@ function toggleBook(i, { forceOpen = false } = {}) {
   }
   renderLibrary();
   saveUI();
-  $(`#libBody [data-book="${i}"]`)?.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  const list = $('#libBody');
+  const rowEl = list && $(`[data-book="${i}"]`, list);
+  if (!rowEl) return;
+  // Desplaza solo la lista, nunca la página: la fila pulsada se queda donde está.
+  const bounds = list.getBoundingClientRect();
+  const box = rowEl.getBoundingClientRect();
+  if (box.top < bounds.top) list.scrollBy({ top: box.top - bounds.top - 8, behavior: reducedMotion() ? 'auto' : 'smooth' });
+  else if (box.bottom > bounds.bottom) {
+    const visible = Math.min(box.bottom - bounds.bottom + 8, box.top - bounds.top - 8);
+    list.scrollBy({ top: Math.max(0, visible), behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }
 }
 
 /* Búsqueda bíblica: citas («jn 3 16», «1 Co 13») y texto completo */
@@ -1765,13 +2066,15 @@ function paintDownload(id) {
   else renderLibBody();
 }
 
-async function downloadBible(id) {
+async function downloadBible(id, { announce = true } = {}) {
   const meta = bibleMeta(id);
   if (!meta || state.downloads[id] != null) return;
   state.downloads[id] = 0;
   renderLibBody();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
   try {
-    const res = await fetch(meta.url);
+    const res = await fetch(meta.url, { signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const reader = res.body.getReader();
     const chunks = [];
@@ -1785,14 +2088,18 @@ async function downloadBible(id) {
       if (p - state.downloads[id] >= 0.01) { state.downloads[id] = p; paintDownload(id); }
     }
     const text = new TextDecoder().decode(await new Blob(chunks).arrayBuffer()).replace(/^﻿/, '');
-    await idb.put(id, convertBible(meta, JSON.parse(text)));
+    const data = convertBible(meta, JSON.parse(text));
+    await idb.put(id, data);
     state.installed.add(id);
-    toast(`${meta.name} descargada`, { label: 'Usar', fn: () => switchBible(id) });
+    if (announce) toast(`${meta.name} descargada`, { label: 'Usar', fn: () => switchBible(id) });
+    return data;
   } catch {
     toast(`No se pudo descargar ${meta.name}. Revisa la conexión e inténtalo de nuevo.`);
+  } finally {
+    clearTimeout(timer);
+    delete state.downloads[id];
+    renderLibrary();
   }
-  delete state.downloads[id];
-  renderLibrary();
 }
 
 async function switchBible(id) {
@@ -1800,6 +2107,7 @@ async function switchBible(id) {
   const data = id === 'rvr1960' ? state.bundledBible : await idb.get(id).catch(() => null);
   if (!data) { toast('No se encontró esa Biblia en este navegador. Descárgala de nuevo.'); return; }
   setBible(data, id);
+  storePreference('bibleId', id);
   if (state.item?.kind === 'bible') {
     const it = state.item;
     state.item = makeBibleItem(it.b, it.ch, it.from, it.full ? null : it.to);
@@ -1826,6 +2134,7 @@ async function deleteBible(id) {
 /* Carpetas para Mis canciones */
 function persistFolders() {
   store.set(KEY.folders, state.folders);
+  syncLibrary();
 }
 
 function askText({ title, label, value = '', confirm = 'Crear', placeholder = '' }) {
@@ -1874,6 +2183,7 @@ function deleteFolder(folder) {
   const moved = state.mine.filter((s) => s.folderId === folder.id);
   moved.forEach((s) => { s.folderId = null; });
   state.folders.splice(idx, 1);
+  markLibraryDeleted('folders', folder.id);
   persistFolders();
   persistMine();
   state.songLib = null;
@@ -1885,6 +2195,7 @@ function deleteFolder(folder) {
     fn: () => {
       state.folders.splice(idx, 0, folder);
       moved.forEach((s) => { s.folderId = folder.id; });
+      markLibraryAlive('folders', folder.id);
       persistFolders();
       persistMine();
       state.songLib = `folder:${folder.id}`;
@@ -2333,7 +2644,20 @@ function loadItem(item, index = 0) {
   syncGotoFromItem();
   update(true);
   if (isCompact()) setPane('live');
-  $('#slides .is-current')?.scrollIntoView({ block: 'nearest' });
+  revealSlide('is-current');
+}
+
+function revealSlide(className, animate = false) {
+  // En el móvil la tira no se desplaza sola: al pasar con las flechas, la vista previa y los
+  // controles se quedan donde están. En escritorio se mantiene la diapositiva actual a la vista.
+  if (isCompact()) return;
+  const list = $('#slides');
+  const slide = $(`.${className}`, list);
+  if (!slide || !list.clientHeight) return;
+  const bounds = list.getBoundingClientRect();
+  const box = slide.getBoundingClientRect();
+  const offset = box.top < bounds.top ? box.top - bounds.top : Math.max(0, box.bottom - bounds.bottom);
+  if (offset) list.scrollBy({ top: offset, behavior: animate && !reducedMotion() ? 'smooth' : 'auto' });
 }
 
 function select(i) {
@@ -2341,7 +2665,7 @@ function select(i) {
   state.previewIndex = clamp(i, 0, state.item.slides.length - 1);
   syncGotoFromItem();
   update(true);
-  $('#slides .is-current')?.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  revealSlide('is-current', true);
 }
 
 // En un capítulo completo, al pasar del último versículo se continúa en el capítulo vecino.
@@ -2365,9 +2689,48 @@ function step(delta) {
 
 // Modo estudio: la vista previa y lo que está en vivo van por separado (como en OBS).
 // state.liveAt señala lo que se proyecta; en modo normal sigue siempre a la vista previa.
-const studioOn = () => !!state.studio && !isCompact();
+const studioOn = () => !!state.studio;
 const slideAt = (at) => (at ? at.item.slides[at.i] : null);
 let liveStage = null;
+let remoteProjection = null;
+let watchingProjection = false;
+
+async function watchStudioProjection() {
+  const watching = () => studioOn() && auth.mode === 'open' && !canPublishLive;
+  if (watchingProjection || !watching()) return;
+  watchingProjection = true;
+  let revision = -1;
+  try {
+    while (watching()) {
+      const key = `&k=${encodeURIComponent(auth.viewer)}`;
+      try {
+        const data = await readProjection(revision, key);
+        if (!watching()) return;
+        if (data.rev !== revision) {
+          revision = data.rev;
+          remoteProjection = data.state;
+          paintLiveMonitor(false);
+          renderMonitorMeta();
+        }
+      } catch {
+        await sleep(1500);
+      }
+    }
+  } finally {
+    watchingProjection = false;
+  }
+}
+
+function paintLiveMonitor(animate) {
+  if (!studioOn() || !liveStage) return;
+  if (!canPublishLive && remoteProjection?.look) {
+    const mediaUrl = id => `api/media?id=${encodeURIComponent(id)}&k=${encodeURIComponent(auth.viewer)}`;
+    paintStage(liveStage, { ...remoteProjection, silent: true, mediaUrl }, animate);
+  } else {
+    const audible = state.live.slide?.media?.kind === 'video';
+    paintStage(liveStage, { ...state.live, silent: !audible }, animate);
+  }
+}
 
 // Modo de dos pantallas: pone en vivo esa diapositiva y deja preparada la siguiente a la izquierda.
 function sendToLive(item, i) {
@@ -2379,7 +2742,7 @@ function sendToLive(item, i) {
   if (state.item !== prevItem) { renderStrip(); renderLibBody(); }
   syncGotoFromItem();
   setOnAir(true);
-  $('#slides .is-live')?.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  revealSlide('is-current', true);
 }
 
 // Adelante envía lo que espera a la izquierda (la siguiente, o lo que elegiste en la biblioteca).
@@ -2402,7 +2765,10 @@ function resumeLive() {
 
 function setOnAir(on) {
   if (on && !state.item && !state.liveAt) return;
-  if (on) canPublishLive = true;
+  if (on || (studioOn() && remoteProjection?.slide)) {
+    canPublishLive = true;
+    remoteProjection = null;
+  }
   const before = slideAt(state.liveAt);
   state.onAir = on;
   // Un video empieza a reproducirse al ponerlo en vivo y se pausa al apagar.
@@ -2437,7 +2803,7 @@ function update(animate) {
   state.live.playback = live?.media ? state.playback : null;
   const audible = live?.media?.kind === 'video';
   paintStage(stage, { look: state.live.look, slide, blank: false, hideText: false, playback: state.playback, silent: studio || !audible || live !== slide }, animate);
-  if (studio && liveStage) paintStage(liveStage, { look: state.live.look, slide: live, blank: false, hideText: false, playback: state.playback, silent: !audible }, liveChanged);
+  paintLiveMonitor(liveChanged);
   paintAmbient(slide);
   renderMediaBar();
   if (sessionReady) postLive();
@@ -2455,13 +2821,17 @@ function renderMonitorMeta() {
   const studio = studioOn();
   const connected = state.outputConnected;
   const label = slide ? slideLabel(state.item, state.previewIndex) : '';
-  const liveLabel = on && state.liveAt ? slideLabel(state.liveAt.item, state.liveAt.i) : '';
+  const remoteSlide = studio && !canPublishLive ? remoteProjection?.slide : null;
+  const projecting = on || !!remoteSlide;
+  const liveLabel = remoteSlide
+    ? (remoteSlide.ref || remoteSlide.label || 'Proyección activa')
+    : on && state.liveAt ? slideLabel(state.liveAt.item, state.liveAt.i) : '';
   const previewIsLive = on && !studio;
   // Al final, la «siguiente» es la misma que está en vivo: no hay nada más que pasar.
   const noNext = studio && on && state.liveAt?.item === state.item && state.liveAt.i === state.previewIndex;
   $('#monitorEmpty').hidden = !!slide;
   const tag = $('#monitorLabel');
-  tag.textContent = studio ? 'Siguiente' : previewIsLive ? 'En vivo' : 'Vista previa';
+  tag.textContent = previewIsLive ? 'En vivo' : 'Vista previa';
   tag.classList.toggle('live', previewIsLive);
   $('#obsChip').hidden = !previewIsLive;
   $('#monitorRef').textContent = noNext ? 'No hay más diapositivas' : label;
@@ -2474,19 +2844,21 @@ function renderMonitorMeta() {
   $('#prevBtn').disabled = studio && on && state.liveAt ? !target(-1, state.liveAt.item, state.liveAt.i) : !target(-1);
   $('#nextBtn').disabled = studio ? !slide || noNext : !target(1);
   if (studio) {
-    $('#liveLabel').classList.toggle('live', on);
+    $('#liveLabel').classList.toggle('live', projecting);
     $('#liveRef').textContent = liveLabel;
     $('#liveEmpty').hidden = !!liveLabel;
-    $('#liveMonitor').classList.toggle('on-air', on);
-    $('#clearLive').disabled = !on;
+    $('#liveMonitor').classList.toggle('on-air', projecting);
+    $('#clearLive').disabled = !projecting;
   }
 
   const pill = $('#liveStatus');
-  pill.dataset.state = on ? 'live' : 'idle';
-  $('span', pill).textContent = on ? 'En vivo' : connected ? 'Apagado' : 'Sin proyector';
+  pill.dataset.state = projecting ? 'live' : 'idle';
+  $('span', pill).textContent = projecting ? 'En vivo' : connected ? 'Apagado' : 'Sin proyector';
+  // La pestaña inferior de Proyección avisa desde cualquier otra pestaña que hay algo en vivo.
+  $('.tab[data-pane="live"]')?.classList.toggle('is-live', projecting);
   $('#outputNote').textContent = !connected
     ? 'Abre el proyector para mostrar En vivo en la otra pantalla'
-    : on ? `Proyectando: ${liveLabel}` : 'Proyector conectado · solo muestra el fondo';
+    : projecting ? `Proyectando: ${liveLabel}` : 'Proyector conectado · solo muestra el fondo';
   const open = $('#openOutput');
   open.classList.toggle('accent', !connected);
   $('span', open).textContent = connected ? (DESKTOP ? 'Proyector' : 'Traer el proyector') : 'Abrir proyector';
@@ -2661,6 +3033,7 @@ function persistMedia() {
 
 function persistTexts() {
   store.set(KEY.texts, state.texts);
+  syncLibrary();
 }
 
 // Sube el archivo al servidor para que OBS lo pueda mostrar (solo con ./serve.sh).
@@ -2769,10 +3142,16 @@ function deleteText(t) {
   const idx = state.texts.indexOf(t);
   if (idx < 0) return;
   state.texts.splice(idx, 1);
+  markLibraryDeleted('texts', t.id);
   persistTexts();
   clearItemIf((it) => it.text === t);
   renderLibBody();
-  toast(`«${t.title}» eliminado`, { label: 'Deshacer', fn: () => { state.texts.splice(idx, 0, t); persistTexts(); renderLibBody(); } });
+  toast(`«${t.title}» eliminado`, { label: 'Deshacer', fn: () => {
+    state.texts.splice(idx, 0, t);
+    markLibraryAlive('texts', t.id);
+    persistTexts();
+    renderLibBody();
+  } });
 }
 
 // El archivo se borra del navegador unos segundos después, para que «Deshacer» pueda recuperarlo.
@@ -2989,6 +3368,7 @@ function paintAmbient(slide) {
 /* ───────────── Mis canciones ───────────── */
 function persistMine() {
   if (!store.set(KEY.mine, state.mine)) toast('No se pudo guardar: el almacenamiento del navegador está lleno.');
+  syncLibrary();
 }
 
 const slidesToText = (slides) => slides.map((s) => (s.coro ? `Coro\n${s.text}` : s.text)).join('\n\n');
@@ -3122,13 +3502,24 @@ function editSong(song) {
 
 function hideHymn(song) {
   if (!String(song.source).startsWith('hymnal:')) return;
-  state.hymnHidden.add(songKey(song));
+  const key = songKey(song);
+  state.hymnHidden.add(key);
+  state.hymnShown?.delete(key);
   store.set(KEY.hymnHidden, [...state.hymnHidden]);
+  store.set(KEY.hymnShown, [...(state.hymnShown || [])]);
+  syncLibrary();
   clearSongFromScreen(song);
   renderLibrary();
   toast(`«${song.title}» eliminado del himnario`, {
     label: 'Deshacer',
-    fn: () => { state.hymnHidden.delete(songKey(song)); store.set(KEY.hymnHidden, [...state.hymnHidden]); renderLibrary(); },
+    fn: () => {
+      state.hymnHidden.delete(key);
+      state.hymnShown?.add(key);
+      store.set(KEY.hymnHidden, [...state.hymnHidden]);
+      store.set(KEY.hymnShown, [...(state.hymnShown || [])]);
+      syncLibrary();
+      renderLibrary();
+    },
   });
 }
 
@@ -3154,12 +3545,19 @@ function deleteSong(song) {
   const idx = state.mine.indexOf(song);
   if (idx < 0) return;
   state.mine.splice(idx, 1);
+  markLibraryDeleted('mine', song.id);
   persistMine();
   clearSongFromScreen(song);
   renderLibrary();
   toast(`«${song.title}» eliminada`, {
     label: 'Deshacer',
-    fn: () => { state.mine.splice(idx, 0, song); persistMine(); renderLibrary(); loadItem(makeSongItem(song)); },
+    fn: () => {
+      state.mine.splice(idx, 0, song);
+      markLibraryAlive('mine', song.id);
+      persistMine();
+      renderLibrary();
+      loadItem(makeSongItem(song));
+    },
   });
 }
 
@@ -3263,10 +3661,7 @@ function setLook(patch) {
       toast('La imagen es muy grande para recordarla; se usará solo en esta sesión.');
     }
   }, 250);
-  if (!DESKTOP && settingsAvailable) {
-    pendingSettings.look = { ...pendingSettings.look, ...patch };
-    scheduleSettingsSave();
-  }
+  queueSettings({ look: patch });
   syncLookControls();
   applyRootRatio();
   update(false);
@@ -3365,7 +3760,7 @@ async function readImage(file) {
 
 function refitStages() {
   if (stage) fitStage(stage, state.live.look);
-  if (liveStage) fitStage(liveStage, state.live.look);
+  if (liveStage) fitStage(liveStage, remoteProjection?.look || state.live.look);
 }
 
 function setInspector(open, { focus = false } = {}) {
@@ -3385,8 +3780,10 @@ function setInspector(open, { focus = false } = {}) {
 
 const inspectorOpen = () => $('#app').dataset.inspector === 'open';
 
-function setInspTab(tab) {
+function setInspTab(tab, remember = false) {
+  if (!INSPECTOR_TABS.includes(tab)) tab = 'text';
   state.inspTab = tab;
+  if (remember) storePreference('inspectorTab', tab);
   $$('[data-insp-tab]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.inspTab === tab)));
   $$('[data-insp]').forEach((s) => { s.hidden = s.dataset.insp !== tab; });
   $('#inspBody').scrollTop = 0;
@@ -3395,10 +3792,29 @@ function setInspTab(tab) {
   saveUI();
 }
 
+const paneScroll = { library: 0, live: 0, style: 0 };
+const paneScroller = {
+  library: () => $('#libBody'),
+  live: () => $('.main'),
+  style: () => $('#inspBody'),
+};
+
 function setPane(pane) {
+  if (!Object.hasOwn(paneScroller, pane)) pane = 'library';
+  const switching = isCompact() && state.pane !== pane;
+  if (switching && state.pane) {
+    const current = paneScroller[state.pane]?.();
+    if (current) paneScroll[state.pane] = current.scrollTop;
+  }
   state.pane = pane;
   $('#app').dataset.pane = pane;
   $$('.tab').forEach((t) => t.setAttribute('aria-current', String(t.dataset.pane === pane)));
+  if (pane === 'live') revealSlide('is-current');
+  if (switching) requestAnimationFrame(() => {
+    if (state.pane !== pane) return;
+    const target = paneScroller[pane]?.();
+    if (target) target.scrollTop = paneScroll[pane] || 0;
+  });
   saveUI();
 }
 
@@ -3541,8 +3957,14 @@ async function libAction(action) {
     case 'web-retry': return searchWeb(state.web.q);
     case 'restore-hymns': {
       const prefix = `${state.songLib}|`;
-      [...state.hymnHidden].filter((k) => k.startsWith(prefix)).forEach((k) => state.hymnHidden.delete(k));
+      const restored = [...state.hymnHidden].filter((k) => k.startsWith(prefix));
+      restored.forEach((k) => {
+        state.hymnHidden.delete(k);
+        state.hymnShown?.add(k);
+      });
       store.set(KEY.hymnHidden, [...state.hymnHidden]);
+      store.set(KEY.hymnShown, [...(state.hymnShown || [])]);
+      syncLibrary();
       renderLibrary();
       return toast('Himnos recuperados');
     }
@@ -3837,8 +4259,13 @@ function bindEvents() {
   $('#liveBtn').addEventListener('click', () => (studioOn() ? studioNext() : setOnAir(!state.onAir)));
   $('#openOutput').addEventListener('click', openOutput);
   $('#toggleInspector').addEventListener('click', () => setInspector(!inspectorOpen(), { focus: true }));
-  $('#closeInspector').addEventListener('click', () => setInspector(false));
-  $$('[data-insp-tab]').forEach((b) => b.addEventListener('click', () => setInspTab(b.dataset.inspTab)));
+  $('#closeInspector').addEventListener('click', () => {
+    if (isCompact()) {
+      setPane('live');
+      $('[data-pane="live"].tab').focus({ preventScroll: true });
+    } else setInspector(false);
+  });
+  $$('[data-insp-tab]').forEach((b) => b.addEventListener('click', () => setInspTab(b.dataset.inspTab, true)));
   $$('.tab').forEach((t) => t.addEventListener('click', () => setPane(t.dataset.pane)));
 
   const panel = $('#inspector');
@@ -3864,8 +4291,8 @@ function bindEvents() {
     }
   });
   $('#resetLook').addEventListener('click', () => {
-    const previous = { ...state.live.look };
-    setLook({ ...DEFAULT_LOOK });
+    const previous = { layout: null, ...state.live.look };
+    setLook({ ...DEFAULT_LOOK, layout: null });
     toast('Apariencia restablecida', { label: 'Deshacer', fn: () => setLook(previous) });
   });
   $('#bgFile').addEventListener('change', async (e) => {
@@ -4001,6 +4428,10 @@ function applyStudio() {
   $('.monitors').classList.toggle('studio', on);
   $('#liveCol').hidden = !on;
   $('#studioSwitch').checked = !!state.studio;
+  const player = $('#mediaBar');
+  const monitor = $('#monitor');
+  if (on && isCompact()) monitor.after(player);
+  else if (player.parentElement !== monitor) monitor.append(player);
 }
 
 function setStudio(on) {
@@ -4013,6 +4444,7 @@ function setStudio(on) {
     else { state.item = item; state.previewIndex = i; renderStrip(); renderLibBody(); syncGotoFromItem(); }
   }
   applyStudio();
+  watchStudioProjection();
   // Al pasar a dos pantallas con algo en vivo, a la izquierda aparece directamente la siguiente.
   if (on && studioOn() && state.onAir && state.liveAt) sendToLive(state.liveAt.item, state.liveAt.i);
   else update(false);
@@ -4023,7 +4455,7 @@ function initStudio() {
   state.studio = readPreference('studio', false);
   liveStage = createStage();
   $('#liveMonitor').prepend(liveStage);
-  new ResizeObserver(() => fitStage(liveStage, state.live.look)).observe(liveStage);
+  new ResizeObserver(refitStages).observe(liveStage);
   $('#studioSwitch').addEventListener('change', (e) => setStudio(e.target.checked));
   $('#clearLive').addEventListener('click', () => setOnAir(false));
   matchMedia('(max-width: 1099px)').addEventListener('change', () => { applyStudio(); update(false); });
@@ -4048,11 +4480,24 @@ function initWelcome() {
   const preview = () => { $('#wlPrevName').textContent = nameInput.value.trim() || DEFAULT_NAME; };
 
   nameInput.addEventListener('input', preview);
-  dlg.addEventListener('click', (e) => {
+  $('#wlSync').hidden = DESKTOP || !settingsAvailable;
+  dlg.addEventListener('click', async (e) => {
     const action = e.target.closest('[data-wl]')?.dataset.wl;
     if (action === 'back') dlg.close();
     else if (action === 'change-pin') { dlg.close(); showGate('change'); }
     else if (action === 'lock-now') { dlg.close(); lockNow(); }
+    else if (action === 'sync-now') {
+      const status = $('#wlSyncText');
+      const before = status.textContent;
+      status.textContent = 'Buscando cambios…';
+      if (await pullSharedChanges()) {
+        toast('Contenido actualizado');
+        setTimeout(() => location.reload(), 500);
+      } else {
+        status.textContent = 'No se pudo conectar; inténtalo de nuevo';
+        setTimeout(() => { status.textContent = before; }, 4000);
+      }
+    }
   });
   form.addEventListener('submit', () => {
     const name = nameInput.value.trim();
@@ -4250,7 +4695,8 @@ function startConsole() {
   auth.onUnlock = () => {
     $('#panelLanBtn').hidden = (DESKTOP || !localConsole()) && !auth.panelUrls.length;
     resyncServer();
-    scheduleSettingsSave();
+    scheduleSettingsSave(0);
+    watchStudioProjection();
   };
   auth.keepAlive = () => state.onAir;
 }

@@ -132,6 +132,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  overscroll-behavior: none;
 }
 button, input, select, textarea { font: inherit; color: inherit; letter-spacing: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -707,8 +708,12 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .app[data-inspector="open"] .inspector {
   display: flex;
 }
-.app[data-inspector="closed"] .inspector {
-  display: none !important;
+/* En escritorio, cerrar Apariencia la quita del todo. En móvil es una pestaña propia: la visibilidad
+   la decide data-pane, no data-inspector. */
+@media (min-width: 1100px) {
+  .app[data-inspector="closed"] .inspector {
+    display: none !important;
+  }
 }
 .insp-head {
   position: relative; display: flex; align-items: center; justify-content: space-between;
@@ -1136,6 +1141,17 @@ dialog.welcome[open] { animation: wl-open 0.45s var(--ease-out); }
 .wl-security .link-inline { display: inline-flex; align-items: center; gap: 5px; }
 .wl-security .i { width: 14px; height: 14px; stroke-width: 2; }
 
+/* Sincronización de la biblioteca entre equipos */
+.wl-sync {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; margin-top: 18px; padding: 10px 12px; border-radius: 12px;
+  background: var(--sidebar); box-shadow: inset 0 0 0 0.5px var(--separator);
+  font-size: 12.5px; color: var(--label-2);
+}
+.wl-sync-text { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.wl-sync-text .i { width: 15px; height: 15px; color: var(--ok); stroke-width: 2.2; flex: none; }
+.wl-sync .link-inline { flex: none; font-size: 12.5px; }
+
 /* ───────────── Pantalla de arranque ─────────────
    Lo primero que se ve al abrir o recargar: el ícono, como al abrir una app. Si la comprobación tarda,
    aparece un indicador discreto. Desaparece con un fundido cuando ya se sabe si va la consola o la entrada. */
@@ -1345,18 +1361,50 @@ code { font: 500 0.92em ui-monospace, "SF Mono", Menlo, monospace; }
   .library { border-right: 0; }
   .lib-head { padding: max(14px, env(safe-area-inset-top, 0px)) var(--gutter) 10px; }
   .lib-body { padding-inline: calc(var(--gutter) - 8px); }
-  .main { display: block; overflow: auto; }
-  .toolbar { padding: env(safe-area-inset-top, 0px) var(--gutter) 0; height: calc(56px + env(safe-area-inset-top, 0px)); }
-  #toggleInspector, #closeInspector { display: none; }
-  .monitors { grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 16px var(--gutter); }
+  .main { display: block; overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .toolbar {
+    display: grid; gap: 8px; height: auto;
+    padding: max(10px, env(safe-area-inset-top, 0px)) var(--gutter) 10px;
+  }
+  .toolbar-actions {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px; margin: 0;
+  }
+  .toolbar .toolbar-actions .btn {
+    width: 100%; min-height: 44px; padding: 4px 6px;
+    font-size: 12px; line-height: 1.15; white-space: normal; text-align: center; gap: 4px;
+  }
+  .toolbar-actions .btn .i { width: 16px; height: 16px; flex: none; }
+  .toolbar .studio-switch { grid-column: span 2; justify-content: space-between; min-height: 44px; margin: 0; padding-inline-end: 8px; }
+  .toolbar .studio-switch > span:first-child { display: inline; white-space: normal; }
+  .toolbar .theme-seg { grid-auto-columns: minmax(0, 1fr); }
+  .toolbar .theme-seg button { height: 40px; min-width: 0; }
+  /* El botón principal ocupa dos columnas y OBS la tercera: la fila queda completa. */
+  .toolbar-actions #openOutput { grid-column: span 2; }
+  .toolbar-actions #panelLanBtn { grid-column: 1 / -1; }
+  #toggleInspector { display: none; }
+  .monitors { gap: 14px; padding: 12px var(--gutter); height: auto; overflow: visible; }
   .monitor-col { max-width: none; }
+  .monitors.studio { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .monitors.studio .monitor-col { display: contents; }
+  .monitors.studio .monitor-head { grid-row: 1; flex-wrap: wrap; align-content: start; gap: 2px; height: auto; }
+  .monitors.studio .monitor-label { font-size: 11px; }
+  .monitors.studio .monitor-ref { flex-basis: 100%; margin-left: 0; font-size: 12px; }
+  .monitors.studio .monitor { grid-row: 2; align-self: start; min-width: 0; }
+  .monitors.studio .monitor-empty { padding: 8px; font-size: 12px; }
+  .monitors.studio .monitor-controls, .monitors.studio > .monitor-col > #mediaBar { grid-column: 1 / -1; }
+  .monitors.studio .monitor-controls.single { grid-row: 4; }
+  .monitors.studio:has(#mediaBar:not([hidden])) .monitor-controls.single { grid-row: 5; }
+  .monitors.studio #mediaBar { position: static; }
+  .monitors.studio .ambient { display: none; }
   .strip { border-top: 1px solid var(--separator); }
   .strip-head { padding: 14px var(--gutter) 10px; }
-  .slides { overflow: visible; padding: 2px var(--gutter) 24px; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
-  .toggle kbd, .btn-primary kbd { display: none; }
-  .resizer, .split-v, .studio-switch { display: none; }
-  .monitors { height: auto; overflow: visible; }
-  .monitor-col { max-width: none; }
+  .slides {
+    max-height: clamp(138px, 36dvh, 420px); overscroll-behavior-y: contain;
+    padding: 2px var(--gutter) 14px; grid-template-columns: repeat(auto-fill, minmax(min(140px, 100%), 1fr));
+  }
+  .toggle kbd, .btn-primary kbd, .live-btn kbd { display: none; }
+  .resizer, .split-v { display: none; }
 
   .tabbar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
@@ -1371,6 +1419,13 @@ code { font: 500 0.92em ui-monospace, "SF Mono", Menlo, monospace; }
   .tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 10px; font-weight: 600; color: var(--label-3); }
   .tab .i { width: 25px; height: 25px; }
   .tab[aria-current="true"] { color: var(--accent); }
+  /* Punto rojo: hay algo en vivo aunque estés en otra pestaña. */
+  .tab.is-live { color: var(--live); }
+  .tab.is-live .i { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--live) 55%, transparent)); }
+  .tab.is-live span::after {
+    content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%;
+    background: var(--live); vertical-align: 1px; animation: pulse 2s ease-in-out infinite;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1586,9 +1641,10 @@ dialog.studio::backdrop { background: rgb(0 0 0 / 0.45); }
 .audio-bar .mb-time { min-width: 34px; color: var(--label-2); }
 .audio-bar input.mb-vol { width: 70px; }
 @media (max-width: 1099px) {
-  .audio-bar { position: fixed; left: 12px; right: 12px; bottom: calc(var(--tabbar-h) + 10px); z-index: 25; margin: 0; max-width: none; }
-  .ab-title { max-width: 90px; }
-  .audio-bar .mb-vol, .audio-bar #abMute { display: none; }
+  .audio-bar { flex-wrap: wrap; height: auto; margin: 0; max-width: none; padding: 4px 8px; border-radius: var(--r-md); }
+  .ab-title { flex: 1 1 35%; max-width: none; }
+  :is(.media-bar, .audio-bar) input.mb-vol { width: clamp(40px, 12vw, 70px); }
+  .media-bar { flex-wrap: wrap; padding: 4px 8px; border-radius: var(--r-md); }
 }
 
 @media (prefers-reduced-transparency: reduce) {

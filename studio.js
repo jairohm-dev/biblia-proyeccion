@@ -4,28 +4,28 @@
    así que puede cargarse antes que app.js. */
 
 /* ───────────── Diseño en el escenario (consola, proyector y OBS) ───────────── */
-function renderStageDesign(stage, design) {
+function renderStageDesign(stage, design, mediaUrl = resolveMedia) {
   const layer = stage.querySelector('.stage-design');
   stage.classList.toggle('has-design', !!design);
   if (!design) {
     if (layer.firstChild || layer.getAttribute('style')) { layer.replaceChildren(); layer.removeAttribute('style'); }
     return;
   }
-  const bgUrl = design.bgMedia ? resolveMedia(design.bgMedia) : null;
+  const bgUrl = design.bgMedia ? mediaUrl(design.bgMedia) : null;
   // Solo se reconstruye si cambió: así las animaciones de entrada no se repiten en cada repintado.
-  const urls = design.elements.filter((e) => e.type === 'image').map((e) => resolveMedia(e.media) || '');
+  const urls = design.elements.filter((e) => e.type === 'image').map((e) => mediaUrl(e.media) || '');
   const sig = JSON.stringify([design, bgUrl, urls]);
   if (layer.dataset.sig === sig) return;
   layer.dataset.sig = sig;
   layer.style.backgroundColor = design.bg || '';
   layer.style.backgroundImage = bgUrl ? `url("${bgUrl}")` : '';
-  layer.replaceChildren(...design.elements.map(designNode));
+  layer.replaceChildren(...design.elements.map(el => designNode(el, mediaUrl)));
 }
 
 const ELEMENT_ANIMS = [['none', 'Ninguna'], ['fade', 'Aparecer'], ['rise', 'Subir'], ['zoom', 'Acercar'],
   ['left', 'Desde la izquierda'], ['right', 'Desde la derecha'], ['blur', 'Enfocar']];
 
-function designNode(el) {
+function designNode(el, mediaUrl = resolveMedia) {
   const node = document.createElement('div');
   node.className = `d-el d-${el.type}`;
   node.dataset.el = el.id;
@@ -37,7 +37,7 @@ function designNode(el) {
   if (el.type === 'image') {
     node.style.opacity = el.opacity ?? 1;
     node.style.borderRadius = `calc(${el.radius || 0} * 0.09259cqh)`;
-    const url = resolveMedia(el.media);
+    const url = mediaUrl(el.media);
     if (url) {
       const img = document.createElement('img');
       img.src = url;
@@ -85,6 +85,7 @@ function makeDeckItem(deck) {
 
 function persistDecks() {
   if (!store.set(KEY.decks, state.decks)) toast('No se pudo guardar la presentación: el almacenamiento del navegador está lleno.');
+  syncLibrary();
 }
 
 function deckMediaIds(deck) {
@@ -114,10 +115,16 @@ function deleteDeck(deck) {
   const idx = state.decks.indexOf(deck);
   if (idx < 0) return;
   state.decks.splice(idx, 1);
+  markLibraryDeleted('decks', deck.id);
   persistDecks();
   clearItemIf((it) => it.deck === deck);
   renderLibBody();
-  toast(`«${deck.name}» eliminada`, { label: 'Deshacer', fn: () => { state.decks.splice(idx, 0, deck); persistDecks(); renderLibBody(); } });
+  toast(`«${deck.name}» eliminada`, { label: 'Deshacer', fn: () => {
+    state.decks.splice(idx, 0, deck);
+    markLibraryAlive('decks', deck.id);
+    persistDecks();
+    renderLibBody();
+  } });
 }
 
 function refreshDeckItem(deck, index = state.previewIndex) {

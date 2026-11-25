@@ -88,8 +88,12 @@ En Windows, `iniciar-windows.cmd -Ayuda` muestra todas las opciones, entre ellas
 En macOS usa el Apache del sistema; en Linux, el de la distribución (`sudo apt install apache2`).
 </details>
 
-Los dispositivos que entran al panel web reciben la apariencia y las preferencias guardadas en el servidor.
-Consulta la [guía de acceso por IP y por internet](docs/ACCESO-REMOTO.md).
+Los dispositivos que entran al panel web reciben la apariencia, el tema, el modo **Previa + En vivo**,
+la versión de la Biblia y los textos de canciones, presentaciones e himnos editados. También se
+comparten las carpetas y los himnos ocultos. En **Iglesia y seguridad** puedes buscar los últimos
+cambios hechos en otro equipo. Los archivos de imagen, video y audio de la biblioteca se guardan en
+el navegador que los agregó. En el teléfono, abre **Proyección** para usar ambos monitores y avanzar sin
+perder de vista los controles. Consulta la [guía de acceso por IP y por internet](docs/ACCESO-REMOTO.md).
 
 ### Uso básico
 
