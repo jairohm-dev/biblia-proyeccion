@@ -50,7 +50,7 @@ param(
   [switch]$RestablecerPin,
   [Alias('Reset', 'BorrarTodo')][switch]$Reiniciar,
   [switch]$NoAbrir,
-  [Alias('h', 'help', 'ayuda')][switch]$Ayuda
+  [Alias('h', 'help')][switch]$Ayuda
 )
 
 Set-StrictMode -Version 2
